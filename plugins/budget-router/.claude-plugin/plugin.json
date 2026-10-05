@@ -1,0 +1,31 @@
+{
+  "name": "budget-router",
+  "version": "0.2.1",
+  "author": { "name": "ValhalaStudio" },
+  "description": "Routes each turn to the cheapest adequate model/effort, tightens caps at 50%/80% of today's usage budget, locks Claude Code at 100%",
+  "userConfig": {
+    "classifier": {
+      "type": "string",
+      "title": "Task classifier",
+      "description": "haiku: a tiny Haiku call labels each prompt (more accurate). heuristic: keyword rules only (free, instant)",
+      "options": ["haiku", "heuristic"],
+      "default": "haiku"
+    },
+    "tierTrivial": { "type": "string", "title": "Trivial tier", "description": "model:effort for chit-chat, quick facts, one obvious command", "default": "haiku:low" },
+    "tierLight": { "type": "string", "title": "Light tier", "description": "model:effort for small, fully specified edits and lookups", "default": "sonnet:low" },
+    "tierStandard": { "type": "string", "title": "Standard tier", "description": "model:effort for normal coding, debugging, config work", "default": "sonnet:high" },
+    "tierDeep": { "type": "string", "title": "Deep tier", "description": "model:effort for design, hard bugs, refactors, security, research", "default": "opus:high" },
+    "tierMax": { "type": "string", "title": "Max tier", "description": "model:effort when the prompt says think hard / ultrathink", "default": "opus:xhigh" },
+    "warnPercent": { "type": "number", "title": "First cap at (% of daily budget)", "description": "At this share of today's budget the cap below applies and an alert shows", "default": 50 },
+    "warnCap": { "type": "string", "title": "Cap after first threshold", "description": "Highest model:effort allowed past warnPercent", "default": "sonnet:high" },
+    "criticalPercent": { "type": "number", "title": "Second cap at (% of daily budget)", "description": "At this share of today's budget the stricter cap applies", "default": 80 },
+    "criticalCap": { "type": "string", "title": "Cap after second threshold", "description": "Highest model:effort allowed past criticalPercent", "default": "haiku:medium" },
+    "lockAtLimit": { "type": "boolean", "title": "Lock at 100%", "description": "Refuse prompts once today's budget is spent, until local midnight (/budget unlock overrides for 1 hour)", "default": true },
+    "includeFiveHour": { "type": "boolean", "title": "Also cap on the 5-hour window", "description": "Apply the same caps when the 5-hour rate-limit window passes the thresholds (never locks on it)", "default": true },
+    "haikuMaxContext": { "type": "number", "title": "Haiku context ceiling (tokens)", "description": "Above this conversation size Haiku is never chosen (its window is 200k)", "default": 120000 },
+    "stickyContext": { "type": "number", "title": "Sticky above (tokens)", "description": "Above this conversation size a one-step model change is skipped, since switching models re-caches the whole context", "default": 60000 },
+    "haikuModel": { "type": "string", "title": "Haiku model id", "description": "Alias or full model id for Haiku turns and the classifier", "default": "haiku" },
+    "sonnetModel": { "type": "string", "title": "Sonnet model id", "description": "Alias or full model id for Sonnet turns", "default": "sonnet" },
+    "opusModel": { "type": "string", "title": "Opus model id", "description": "Alias or full model id for Opus turns", "default": "opus" }
+  }
+}
