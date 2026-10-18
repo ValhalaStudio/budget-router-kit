@@ -91,3 +91,7 @@ All read-only, on cheap models, with short descriptions (about 60 tokens each in
 claude plugin uninstall budget-router@budget-router-kit
 claude plugin marketplace remove budget-router-kit
 ```
+
+## License
+
+GPL-3.0-or-later. Copyright (C) 2026 ValhalaStudio. See [LICENSE](LICENSE).

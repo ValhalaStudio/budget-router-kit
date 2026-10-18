@@ -1,10 +1,20 @@
 {
   "name": "budget-router",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "author": {
     "name": "ValhalaStudio"
   },
-  "description": "Routes each turn to the cheapest adequate model/effort, caps at 50%/80% of today's usage budget and locks at 100% (or stays soft), sets subagent models, suggests cheap helper agents, guards Unreal editor scripts, keeps a decision log",
+  "description": "Routes each Claude Code prompt to the right model and effort, and keeps you inside a daily usage budget.",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
+  "repository": "https://github.com/ValhalaStudio/budget-router-kit",
+  "keywords": [
+    "model-routing",
+    "usage-budget",
+    "token-saving",
+    "subagents",
+    "unreal-engine"
+  ],
   "userConfig": {
     "classifier": {
       "type": "string",

@@ -1,6 +1,8 @@
 {
   "name": "budget-router-kit",
-  "owner": { "name": "ValhalaStudio" },
+  "owner": {
+    "name": "ValhalaStudio"
+  },
   "metadata": {
     "description": "Token-budget tools for Claude Code"
   },
@@ -8,8 +10,8 @@
     {
       "name": "budget-router",
       "source": "./plugins/budget-router",
-      "description": "Routes each turn to the cheapest adequate model/effort, caps at 50%/80% of today's usage budget, locks Claude Code at 100%",
-      "version": "0.4.1"
+      "description": "Routes each Claude Code prompt to the right model and effort, and keeps you inside a daily usage budget.",
+      "version": "0.4.2"
     }
   ]
 }
