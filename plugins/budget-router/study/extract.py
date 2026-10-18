@@ -98,7 +98,7 @@ for f in glob.glob(os.path.join(PROJECTS, '**', '*.jsonl'), recursive=True):
                 pi = len(pairs)
                 pairs.append([tn['text'], nxt['text'], gap * 1000])
         texts.append(tn['text'])
-        pending.append(({'when': tn['when'], 'prompt_len': len(tn['text']), 'arm': tn['arms'].most_common(1)[0][0], 'msgs': tn['msgs'],
+        pending.append(({'sess': os.path.basename(f)[:8], 'idx': i, 'prev_msgs': turns[i - 1]['msgs'] if i > 0 else None, 'when': tn['when'], 'prompt_len': len(tn['text']), 'arm': tn['arms'].most_common(1)[0][0], 'msgs': tn['msgs'],
                          'tool_results': tn['tr'], 'errors': tn['err'], 'usd': round(tn['usd'], 4), 'gap_s': gap}, pi))
 
 kinds, follows = classify(texts, pairs)
