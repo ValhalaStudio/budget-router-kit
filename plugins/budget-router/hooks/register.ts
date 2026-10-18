@@ -660,11 +660,14 @@ export const register: Register = (on, options) => {
   // It only ever tightens: any other tool passes straight through, and a deny from
   // your settings stays a deny.
   on('tool.check', async ($, e, next) => {
-    if (!o.askBeforeUnrealScripts || !isUnrealScriptTool(e.tool)) return next(e)
-    const settled = await next(e)
-    return settled.decision === 'deny'
-      ? next(e)
-      : { decision: 'ask' as const, reason: 'budget-router: this tool runs arbitrary Python inside the Unreal editor and can delete assets. Commit your work first, then approve if you want it.' }
+    if (!o.askBeforeUnrealScripts || !isUnrealScriptTool(e.tool)) {
+      return next(e)
+    }
+    const verdict = await next(e)
+    if (verdict.decision === 'deny') {
+      return next(e)
+    }
+    return { decision: 'ask', reason: 'budget-router: this tool runs arbitrary Python inside the Unreal editor and can delete assets. Commit your work first, then approve if you want it.' }
   })
 
   on('command.run', { command: 'budget' }, async ($, e) => {
