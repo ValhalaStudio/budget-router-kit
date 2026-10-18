@@ -470,6 +470,7 @@ export const kTokens = (n: number): string => (n >= 1000 ? `${Math.round(n / 100
 
 /** What one more step costs just to re-read a context of this size from the cache. */
 export const stepReadUsd = (ctx: number, family: Family): number => (ctx * CACHE_PRICE[family].read) / 1e6
+export const stepWriteUsd = (ctx: number, family: Family): number => (ctx * CACHE_PRICE[family].write) / 1e6
 
 export type IdleRebuild = { ctx: number; idleMin: number; rebuildUsd: number; warmUsd: number }
 

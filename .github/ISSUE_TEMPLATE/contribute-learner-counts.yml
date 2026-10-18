@@ -1,0 +1,27 @@
+name: Contribute your learner counts
+description: Share anonymous counts from /budget learn export to help improve the shipped prior
+title: "Learner counts: <plugin version>"
+labels: ["contribution"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. This is optional and nothing is sent unless you post it here.
+
+        **What the export contains:** how many turns ran on each model/effort pair, how many went well, and what they cost, overall and per kind of prompt (go, question, change, ...). **It contains no prompt text, no folder or project names, no dates and no feature weights.** Please read the JSON before posting. Anything you post in a public issue is public and may be copied.
+
+        How to export: run `/budget learn export` in Claude Code and copy the JSON block.
+  - type: textarea
+    id: counts
+    attributes:
+      label: Output of /budget learn export (the JSON block)
+      render: json
+    validations:
+      required: true
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Consent
+      options:
+        - label: I read the JSON, it holds no private information, and I agree it may be merged into a public table of aggregate counts (a cell is only used once at least three people contributed it).
+          required: true

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { kindOf, priceFor, ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
+import { exportContribution, kindOf, priceFor, priorCell, stepBucket, ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
 
 const seeded = (seed = 1) => {
   let s = seed
@@ -161,5 +161,39 @@ describe('kinds and follow-ups on real-shaped prompts', () => {
   test('templated image headers are not rephrases', () => {
     const a = '[Image: original 2592x1518, displayed at 2000x1171. Multiply coordinates by 1.3]'
     expect(followUp(a, a.replace('1171', '1172'), 1000, /^no\b/i)).toBe('none')
+  })
+})
+
+describe('shipped prior and contributions', () => {
+  test('a shipped cell is capped so your own record takes over', () => {
+    const c = priorCell({ '*': { 'sonnet·high': { s: 900, f: 100 } } }, '*', 'sonnet·high', 1)
+    expect(Math.abs((c?.n ?? 0) - 4) < 1e-9).toBe(true)
+    expect(Math.abs((c?.s ?? 0) - 3.6) < 1e-9).toBe(true)
+  })
+  test('a prior alone never unlocks a cheaper step', () => {
+    const s = emptyStore()
+    const prior = { '*': { [armName(base - 1)]: { s: 400, f: 1 } } }
+    for (let seed = 1; seed <= 20; seed++) {
+      const p = pickArm({ base, tier: 'standard', scope: scopeOf(s, 'chat', 'p'), w: s.weights, x: [], now: 1, dailyUsedPct: 10, typical, rand: seeded(seed), exploresLeft: 12, explore: 0, kind: 'chat', prior })
+      expect(p.arm).toBe(base)
+    }
+  })
+  test('the export holds counts and costs only', () => {
+    let s = emptyStore()
+    for (let i = 0; i < 3; i++) s = record(s, { kind: 'question', project: 'secret-folder-hash', arm: base, base, x: [1, 2, 3], ok: i < 2, costUsd: 0.1, now: 1 })
+    const c = exportContribution(s, '0.10.0', 1)
+    const text = JSON.stringify(c)
+    expect(c.schema).toBe('budget-router-contribution/1')
+    expect(c.arms[armName(base)]?.n).toBe(3)
+    expect(c.arms[armName(base)]?.ok).toBe(2)
+    expect(c.kinds.question?.[armName(base)]?.n).toBe(3)
+    expect(text.includes('secret-folder-hash')).toBe(false)
+    expect(text.includes('weights')).toBe(false)
+  })
+  test('the previous turn size is a feature', () => {
+    expect(features('fix it', 0, 'long').join(',') === features('fix it', 0, 'short').join(',')).toBe(false)
+    expect(stepBucket(undefined)).toBe('none')
+    expect(stepBucket(45)).toBe('long')
+    expect(stepBucket(12)).toBe('mid')
   })
 })

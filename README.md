@@ -58,12 +58,22 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.9.2 |
+| budget-router | 0.10.0 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
-| Test suite | 102 tests via `claude plugin test`, plus `claude plugin validate` |
+| Test suite | 107 tests via `claude plugin test`, plus `claude plugin validate` |
 
 Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
+
+## Contribute your counts (optional)
+
+The learner starts from my guesses and your own record. If you want to help it start better for everyone:
+
+1. Use the plugin for a while, then run `/budget learn export`. It prints counts only: turns, successes and cost per model/effort pair and per kind of prompt. No prompt text, folders, project names, dates or feature weights.
+2. Read it. If you are happy to share it, open an issue with the "Contribute your learner counts" template and paste it. Nothing is ever sent by the plugin itself.
+3. `plugins/budget-router/study/aggregate.py` merges contributions into `hooks/prior.ts`. A model/effort cell is only included once at least three different people contributed it, each person counts for at most 60 turns per cell, and a shipped cell counts for at most 4 observations in your learner, so your own record takes over quickly. The prior can shape the odds but never lets the learner step down on its own: that still needs evidence from your own turns.
+
+`/budget` shows whether a shared prior is in use. It is empty until enough people have contributed.
 
 ## Update
 

@@ -960,3 +960,18 @@ describe('wrap-up notice', () => {
     expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
   })
 })
+
+describe('learner export and context line', () => {
+  test('/budget learn export gives a shareable summary without prompt text', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+    mock.store(on)
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    on('turn.complete', async () => ({ text: '' }) as never)
+    await $.prompt.submit({ text: 'my secret project plan for acme', origin: { kind: 'composer' } } as never)
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+    const r = await $.command.run({ command: 'budget', args: 'learn export' } as never)
+    expect(r.text).toContain('budget-router-contribution/1')
+    expect(r.text.includes('acme')).toBe(false)
+    expect(r.text).toContain('nothing is sent anywhere')
+  })
+})

@@ -18,9 +18,10 @@ import {
 import type { Finding, LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
-import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, kindOf, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
-import type { Price, SmartStore, Usage } from './smart'
-import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
+import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, kindOf, stepBucket, exportContribution, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
+import type { Momentum, Price, SmartStore, Usage } from './smart'
+import { PRIOR, PRIOR_INFO } from './prior'
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, stepReadUsd, stepWriteUsd, usd } from './policy'
 import type { CmdStats, Learned, Runbook } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
@@ -242,7 +243,7 @@ function readOptions(options: PluginOptions): Opts {
     paceSlack: num(options.paceSlack, 15),
     idleGuard: ['off', 'warn', 'ask'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
     idleMinTokens: num(options.idleMinTokens, 60_000),
-    nudgeTokens: num(options.nudgeTokens, 200_000),
+    nudgeTokens: num(options.nudgeTokens, 150_000),
     runbooks: bool(options.runbooks, true),
     runbookAfter: num(options.runbookAfter, 4),
     runbookDir: str(options.runbookDir, ''),
@@ -465,6 +466,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
+const PLUGIN_VERSION = '0.10.0'
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
 let smartPending: SmartPending | undefined
@@ -472,6 +474,9 @@ let smartLast: (SmartPending & { ok: boolean; at: number }) | undefined
 let smartProject = 'x'
 let smartX: number[] = []
 let smartKind = 'ask'
+let smartPrev: Momentum = 'none'
+let stepsNow = 0 // steps taken by the current main turn
+let lastSteps: number | undefined // steps in the previous main turn of this session
 let smartText = ''
 let lastTurnUsage: Usage = { inp: 2000, out: 1500, cr: 40000, cc: 3000 }
 const dayKey = () => localDay(Date.now())
@@ -540,6 +545,7 @@ async function observeTool($: EngineInterface, e: { tool: string; agentId?: stri
 // After each main turn: record how it went for the learner.
 async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }, u?: Usage & { family: Family; model: string }) {
   if (!v06Loaded) await loadV06($)
+  lastSteps = stepsNow
   if (u) lastTurnUsage = { inp: u.inp, out: u.out, cr: u.cr, cc: u.cc }
   if (o.learn && smartPending) {
     const sp = smartPending
@@ -810,7 +816,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     const base = armIndex(spec)
     const kind = smartKind
     const now = Date.now()
-    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random })
+    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random, kind, prior: PRIOR })
     const live = o.learnMode === 'live'
     smartDecision = { kind, base, arm: live ? pick.arm : base, shadowArm: pick.arm, why: pick.why, explored: pick.explored && live }
     if (live && pick.arm !== base) {
@@ -913,6 +919,7 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
     `  lock: ${!o.lockAtLimit ? 'off (option)' : soft ? 'soft: no refusal at 100%, stays at the second cap (/budget hard to refuse)' : 'hard: refuses prompts at 100%'}`,
     `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills and /budget vet <path> check the skill list`,
   )
+  if (ctxTokens > 0) lines.push(`  context: ${kTokens(ctxTokens)} tokens, about ${usd(stepReadUsd(ctxTokens, route?.family ?? 'sonnet'))} to re-read per step from cache, about ${usd(stepWriteUsd(ctxTokens, route?.family ?? 'sonnet'))} if the cache has expired; /compact or a fresh session shrinks it`)
   if (paceNote !== '') lines.push(`  ${paceNote}`)
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
   lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle${o.idleGuard === 'ask' ? '; pauses that prompt once' : ''})`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
@@ -920,7 +927,7 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
   else if (smartOn()) {
     const rows = smartSummary(smartData, Date.now())
-    lines.push(`  learner: ${o.learnMode} (cost-aware, ${smartData.seen} turns seen${rows.length === 0 ? ', nothing recorded yet' : ''}; /budget learn for detail)`)
+    lines.push(`  learner: ${o.learnMode} (cost-aware, ${smartData.seen} turns seen${rows.length === 0 ? ', nothing recorded yet' : ''}; ${PRIOR_INFO.contributors > 0 ? `shared prior from ${PRIOR_INFO.contributors} contributors` : 'no shared prior yet'}; /budget learn for detail)`)
     lines.push(...rows)
   } else {
     const rows = learnedSummary(learnedData, rungName)
@@ -1079,7 +1086,9 @@ export const register: Register = (on, options) => {
         c = { tier: 'standard', why: `${c.why}; unreal build text` }
       }
       currentBucket = o.learn ? bucketOf(c.tier, e.text) : ''
-      smartX = features(e.text, ctxTokens)
+      smartPrev = stepBucket(lastSteps)
+      stepsNow = 0
+      smartX = features(e.text, ctxTokens, smartPrev)
       smartKind = kindOf(e.text)
       route = decide(c.tier, c.why, p)
       if (smartDecision) {
@@ -1146,6 +1155,7 @@ export const register: Register = (on, options) => {
       })
     }
     await learn($, e.model)
+    stepsNow++
     const base = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
     const spec = await troubleAdjust($, e, base)
     return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
@@ -1231,10 +1241,13 @@ export const register: Register = (on, options) => {
         await $.store.delete(SMART_KEY)
         return { text: 'Smart learner cleared. It starts from the rule choice again.' }
       }
-      if (sub === 'export') return { text: JSON.stringify({ seen: smartData.seen, cells: smartData.cells }, null, 1) }
+      if (sub === 'export') {
+        const c = exportContribution(smartData, PLUGIN_VERSION, now)
+        return { text: ['Learner counts, ready to share if you choose to (nothing is sent anywhere by this plugin). Only turn counts, successes and cost per model/effort and kind of prompt: no prompt text, folders, project names or dates. See README, "Contribute your counts".', JSON.stringify(c, null, 1)].join('\n') }
+      }
       const rows = smartSummary(smartData, now)
       const sav = estimateSavings(smartData)
-      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints the counts (no prompt text is stored).'].join('\n') }
+      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints counts you can choose to share (no prompt text is stored).'].join('\n') }
     }
     if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
     if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }

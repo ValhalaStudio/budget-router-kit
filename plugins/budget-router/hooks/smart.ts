@@ -79,7 +79,12 @@ function hash(s: string): number {
 }
 
 /** Hashed bag of words plus a few shape features. Only the hashed weights are ever stored. */
-export function features(text: string, ctxTokens = 0): number[] {
+export type Momentum = 'none' | 'short' | 'mid' | 'long'
+
+/** How big the previous turn in this session was (assistant steps): long turns tend to follow long turns. */
+export const stepBucket = (steps: number | undefined): Momentum => (steps === undefined ? 'none' : steps >= 30 ? 'long' : steps >= 10 ? 'mid' : 'short')
+
+export function features(text: string, ctxTokens = 0, prev: Momentum = 'none'): number[] {
   const t = text.slice(0, 1500).toLowerCase()
   const idx = new Set<number>()
   for (const w of t.match(/[a-z_]{3,}/g)?.slice(0, 60) ?? []) idx.add(hash(`w:${w}`))
@@ -87,6 +92,7 @@ export function features(text: string, ctxTokens = 0): number[] {
   if (/```|[{};]\s*$/m.test(text)) idx.add(hash('code'))
   if (/[\w-]+\.(ts|js|py|cpp|h|cs|json|md|ps1)\b/i.test(t)) idx.add(hash('files'))
   idx.add(hash(`ctx:${Math.min(5, Math.floor(ctxTokens / 40_000))}`))
+  idx.add(hash(`prev:${prev}`))
   return [...idx]
 }
 
@@ -212,6 +218,8 @@ export type PickInput = {
   exploresLeft: number
   minSamples?: number
   explore?: number // chance per turn of trying one cheaper step with no record
+  kind?: string
+  prior?: PriorTable // shipped pseudo-counts from contributions; shapes p but never unlocks a move
 }
 
 export type Choice = { arm: number; why: string; explored: boolean; scores: Array<{ arm: number; p: number; score: number }> }
@@ -247,7 +255,7 @@ export function pickArm(inp: PickInput): Choice {
     if (i < inp.base && seen(i) < minN) tried = true
     const root = priorP(inp.w, inp.x, i, inp.base)
     const key = armName(i)
-    const post = hierMean([inp.scope.global[key], inp.scope.kind[key], inp.scope.project[key]], root, inp.now)
+    const post = hierMean([priorCell(inp.prior ?? {}, '*', key, inp.now), priorCell(inp.prior ?? {}, inp.kind ?? '', key, inp.now), inp.scope.global[key], inp.scope.kind[key], inp.scope.project[key]], root, inp.now)
     const p = sampleBeta(post.a, post.b, rand)
     const up = Math.min(ARMS.length - 1, i + 1)
     scores.push({ arm: i, p, score: cost(i) + (1 - p) * (cost(up) + q) })
@@ -411,4 +419,42 @@ export function smartSummary(s: SmartStore, now: number): string[] {
 /** Money the learner saved versus always taking the rule choice (negative: it spent more), from measured averages. */
 export function estimateSavings(s: SmartStore): number {
   return s.saved ?? 0
+}
+
+// -- Shipped prior and opt-in contributions ----------------------------------------------------
+
+/** kind (or '*' for all kinds) -> arm name -> pseudo-counts learned from people who chose to contribute. */
+export type PriorTable = Record<string, Record<string, { s: number; f: number }>>
+/** A shipped cell never counts for more than this many observations, so your own record takes over fast. */
+export const PRIOR_CAP = 4
+
+export function priorCell(table: PriorTable, kind: string, arm: string, now: number): Cell | undefined {
+  const c = table[kind]?.[arm]
+  if (!c || c.s + c.f <= 0) return undefined
+  const k = Math.min(1, PRIOR_CAP / (c.s + c.f))
+  return { s: c.s * k, f: c.f * k, c: 0, n: (c.s + c.f) * k, t: now }
+}
+
+export const CONTRIBUTION_SCHEMA = 'budget-router-contribution/1'
+type Tally = { n: number; ok: number; usd: number }
+export type Contribution = { schema: string; plugin: string; turns: number; arms: Record<string, Tally>; kinds: Record<string, Record<string, Tally>> }
+
+const tally = (c: Cell): Tally => ({ n: Math.round(c.n), ok: Math.round(c.s), usd: Math.round(c.c * 1000) / 1000 })
+
+/**
+ * What a person can choose to share: counts, successes and cost per model/effort arm and per kind of
+ * prompt. No prompt text, no folder or project names, no timestamps, no feature weights.
+ */
+export function exportContribution(s: SmartStore, plugin: string, now: number): Contribution {
+  const out: Contribution = { schema: CONTRIBUTION_SCHEMA, plugin, turns: s.seen, arms: {}, kinds: {} }
+  for (const [key, row] of Object.entries(s.cells)) {
+    const target = key === 'g' ? out.arms : key.startsWith('k:') ? (out.kinds[key.slice(2)] = {}) : undefined
+    if (!target) continue
+    for (const [arm, cell] of Object.entries(row)) {
+      const t = tally(decayed(cell, now))
+      if (t.n >= 1) target[arm] = t
+    }
+  }
+  for (const k of Object.keys(out.kinds)) if (Object.keys(out.kinds[k]!).length === 0) delete out.kinds[k]
+  return out
 }
