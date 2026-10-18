@@ -58,10 +58,10 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.9.1 |
+| budget-router | 0.9.2 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
-| Test suite | 97 tests via `claude plugin test`, plus `claude plugin validate` |
+| Test suite | 102 tests via `claude plugin test`, plus `claude plugin validate` |
 
 Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
 

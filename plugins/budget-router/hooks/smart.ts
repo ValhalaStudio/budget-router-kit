@@ -341,7 +341,28 @@ export function fadeFamily(s: SmartStore, family: Family): SmartStore {
 
 // -- Outcome signals -----------------------------------------------------------------------
 
-export const THANKS_RE = /^\s*(thanks|thank you|thx|perfect|great|works|it works|nice|awesome|that worked|good job|looks good|lgtm)\b/i
+export const THANKS_RE = /^\s*(thanks|thank you|thx|perfect|great|works|it works|nice|awesome|cool|that worked|good job|looks good|lgtm|done)/i
+/** Weak acceptance: only when that is the whole message ("ok", "yes"), not the start of a new request. */
+export const WEAK_ACK_RE = /^\s*(ok(ay)?|yes|yep|good|right)[.! ]*$/i
+/** A message that accepts the last answer but carries a complaint is not an acknowledgment. */
+export const COMPLAINT_RE = /\b(but|still|not|wrong|fail(s|ed|ing)?|error|broken|again|instead|except)\b|n't/i
+
+/**
+ * The shape of a prompt, which is what predicts how much work follows. Real prompts are terse, so
+ * topic keywords miss most of them; the first words and the length say more.
+ */
+export function kindOf(text: string): string {
+  const t = text.trim()
+  const lower = t.toLowerCase()
+  if (/^\[?request interrupted/.test(lower)) return 'interrupt'
+  if (t.length <= 25 && /^(yes|yep|yeah|y|ok(ay)?|go|continue|resume|proceed|do it|sure|please do|go ahead|next|retry|keep going)\b/.test(lower)) return 'go'
+  if (t.length > 600 || /\[image/.test(lower) || t.split('\n').length >= 5) return 'paste'
+  if (/^(powershell|pwsh|bash|ssh|sudo|git|npm|pip|python|curl|cd|ls|claude|docker|winget|kubectl)\b/.test(lower) || /^[\w./\\:-]+( +-{1,2}[\w-]+)+/.test(t)) return 'shell'
+  if (/\b(research|investigate|compare|analy[sz]e|audit|evaluate|suggest|brainstorm|think hard|ultrathink|plan|design|strategy|review)\b/.test(lower)) return 'research'
+  if (/\?\s*$/.test(t) || /^(how|what|where|why|when|which|who|is|are|does|do|did|can|could|should|would|whats|what's)\b/.test(lower)) return 'question'
+  if (/^(ok(ay)?[, ]+)?(make|add|fix|implement|create|build|write|merge|push|install|remove|delete|move|rename|change|update|set|turn|kill|get|pull|run|start|stop|try|use|enable|disable|import|export|convert|copy|clean|relist|list|show|check|test|do|let'?s|lets|i want|we need)\b/.test(lower)) return 'change'
+  return t.length < 60 ? 'chat' : 'ask'
+}
 
 function trigrams(s: string): Set<string> {
   const t = s.toLowerCase().replace(/\s+/g, ' ').trim()
@@ -364,8 +385,10 @@ export type FollowUp = 'redo' | 'rephrase' | 'ack' | 'none'
 
 export function followUp(prev: string, text: string, sinceMs: number, redo: RegExp): FollowUp {
   if (redo.test(text)) return 'redo'
-  if (sinceMs < 4 * 60_000 && prev.length > 20 && text.length > 20 && similarity(prev, text) > 0.6) return 'rephrase'
-  if (sinceMs < 15 * 60_000 && THANKS_RE.test(text) && text.length < 80) return 'ack'
+  // Templated pastes (image headers, agent messages) look alike by construction, so they say nothing.
+  const templated = kindOf(text) === 'paste' || kindOf(prev) === 'paste'
+  if (!templated && sinceMs < 4 * 60_000 && prev.length > 20 && text.length > 20 && similarity(prev, text) > 0.6) return 'rephrase'
+  if (sinceMs < 15 * 60_000 && text.length < 80 && !COMPLAINT_RE.test(text) && (THANKS_RE.test(text) || WEAK_ACK_RE.test(text))) return 'ack'
   return 'none'
 }
 

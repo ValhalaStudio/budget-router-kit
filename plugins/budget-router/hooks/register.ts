@@ -18,7 +18,7 @@ import {
 import type { Finding, LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
-import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
+import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, kindOf, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
 import type { Price, SmartStore, Usage } from './smart'
 import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
 import type { CmdStats, Learned, Runbook } from './policy'
@@ -471,6 +471,7 @@ let smartPending: SmartPending | undefined
 let smartLast: (SmartPending & { ok: boolean; at: number }) | undefined
 let smartProject = 'x'
 let smartX: number[] = []
+let smartKind = 'ask'
 let smartText = ''
 let lastTurnUsage: Usage = { inp: 2000, out: 1500, cr: 40000, cc: 3000 }
 const dayKey = () => localDay(Date.now())
@@ -807,7 +808,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
   smartDecision = undefined
   if (smartOn() && !pin && currentBucket !== '') {
     const base = armIndex(spec)
-    const kind = currentBucket.split('|')[1] ?? 'general'
+    const kind = smartKind
     const now = Date.now()
     const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random })
     const live = o.learnMode === 'live'
@@ -1079,6 +1080,7 @@ export const register: Register = (on, options) => {
       }
       currentBucket = o.learn ? bucketOf(c.tier, e.text) : ''
       smartX = features(e.text, ctxTokens)
+      smartKind = kindOf(e.text)
       route = decide(c.tier, c.why, p)
       if (smartDecision) {
         smartPending = pin ? undefined : { kind: smartDecision.kind, project: smartProject, arm: smartDecision.arm, base: smartDecision.base, x: smartX, text: e.text.slice(0, 300), shadow: o.learnMode === 'shadow' }

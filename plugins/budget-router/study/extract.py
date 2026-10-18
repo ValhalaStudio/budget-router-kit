@@ -1,6 +1,7 @@
 """Turn Claude Code transcripts into one row per prompt. Local only; keeps no prompt text.
 
 usage: python -I extract.py [projects_dir] [out.jsonl]
+Kind and follow-up come from the plugin's own kindOf/followUp (classify.mjs, needs Node 22+).
 Row: when, kind, prompt_len, arm (model·effort, the dominant one), msgs, tool_results, errors,
 usd (list prices), follow ('redo'|'rephrase'|'ack'|'none'), gap_s (seconds to the next prompt).
 """
@@ -9,21 +10,13 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime
 
 PROJECTS = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser('~/.claude/projects')
 OUT = sys.argv[2] if len(sys.argv) > 2 else 'turns.jsonl'
 
-DOMAINS = [
-    ('unreal', r'unreal|\bue ?[45]\b|uproject|blueprint|uasset|\bubt\b|lyra|niagara|pilgerweg'),
-    ('git', r'\bgit\b|commit|branch|merge|pull request|\bpush\b|rebase'),
-    ('docs', r'readme|documentation|write[- ]?up|explain|summar|diagram|report'),
-    ('system', r'disk|storage|drive|folder|install|uninstall|delete|move|junction|registry|service'),
-    ('code', r'function|\bbug\b|refactor|\btest|compile|class\b|stack ?trace|\berror\b|implement|plugin'),
-]
-REDO = re.compile(r"^\s*(no\b|nope|wrong|that'?s (not|wrong)|not what i|still (broken|failing|not|wrong)|again\b|try again|redo|you (missed|forgot|didn'?t)|doesn'?t work|didn'?t work|it'?s still)", re.I)
-THANKS = re.compile(r'^\s*(thanks|thank you|thx|perfect|great|works|it works|nice|awesome|that worked|good job|looks good|lgtm)\b', re.I)
 
 # USD per million tokens: (in, out, cache read, cache write); first match wins
 PRICES = [('haiku-5', (0.1, 0.5, 0.01, 0.125)), ('haiku', (1, 5, 0.1, 1.25)), ('sonnet-4', (3, 15, 0.3, 3.75)),
@@ -35,24 +28,6 @@ def price(model):
         if key in (model or ''):
             return p
     return None
-
-
-def kind(text):
-    t = text[:800]
-    for name, rx in DOMAINS:
-        if re.search(rx, t, re.I):
-            return name
-    return 'general'
-
-
-def tri(s):
-    s = re.sub(r'\s+', ' ', s.lower()).strip()
-    return {s[i:i + 3] for i in range(len(s) - 2)}
-
-
-def dice(a, b):
-    x, y = tri(a), tri(b)
-    return 2 * len(x & y) / (len(x) + len(y)) if x and y else 0.0
 
 
 def prompt_text(d):
@@ -69,7 +44,16 @@ def when(ts):
     return datetime.fromisoformat(ts.replace('Z', '+00:00'))
 
 
-rows = []
+def classify(texts, pairs):
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = subprocess.run(['node', os.path.join(here, 'classify.mjs')], input=json.dumps({'texts': texts, 'pairs': pairs}),
+                         capture_output=True, text=True, encoding='utf8', check=True)
+    d = json.loads(out.stdout)
+    return d['kinds'], d['follows']
+
+
+pending = []  # (row without kind/follow, text, pair index or None)
+texts, pairs = [], []
 for f in glob.glob(os.path.join(PROJECTS, '**', '*.jsonl'), recursive=True):
     cur = None
     turns = []
@@ -104,22 +88,23 @@ for f in glob.glob(os.path.join(PROJECTS, '**', '*.jsonl'), recursive=True):
         if not tn['msgs']:
             continue
         nxt = turns[i + 1] if i + 1 < len(turns) else None
-        follow, gap = 'none', None
+        gap, pi = None, None
         if nxt:
             try:
                 gap = (when(nxt['when']) - when(tn['when'])).total_seconds()
             except ValueError:
                 gap = None
-            if REDO.search(nxt['text']):
-                follow = 'redo'
-            elif gap is not None and gap < 240 and len(tn['text']) > 20 and len(nxt['text']) > 20 and dice(tn['text'], nxt['text']) > 0.6:
-                follow = 'rephrase'
-            elif gap is not None and gap < 900 and THANKS.search(nxt['text']) and len(nxt['text']) < 80:
-                follow = 'ack'
-        rows.append({'when': tn['when'], 'kind': kind(tn['text']), 'prompt_len': len(tn['text']), 'arm': tn['arms'].most_common(1)[0][0],
-                     'msgs': tn['msgs'], 'tool_results': tn['tr'], 'errors': tn['err'], 'usd': round(tn['usd'], 4), 'follow': follow, 'gap_s': gap})
+            if gap is not None:
+                pi = len(pairs)
+                pairs.append([tn['text'], nxt['text'], gap * 1000])
+        texts.append(tn['text'])
+        pending.append(({'when': tn['when'], 'prompt_len': len(tn['text']), 'arm': tn['arms'].most_common(1)[0][0], 'msgs': tn['msgs'],
+                         'tool_results': tn['tr'], 'errors': tn['err'], 'usd': round(tn['usd'], 4), 'gap_s': gap}, pi))
 
+kinds, follows = classify(texts, pairs)
 with open(OUT, 'w', encoding='utf8') as fh:
-    for r in rows:
-        fh.write(json.dumps(r) + '\n')
-print(len(rows), 'turns ->', OUT)
+    for k, (r, pi) in zip(kinds, pending):
+        r['kind'] = k
+        r['follow'] = follows[pi] if pi is not None else 'none'
+        fh.write(json.dumps(r, ensure_ascii=False) + chr(10))
+print(len(pending), 'turns ->', OUT)

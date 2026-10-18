@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { priceFor, ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
+import { kindOf, priceFor, ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
 
 const seeded = (seed = 1) => {
   let s = seed
@@ -139,5 +139,27 @@ describe('the wider grid', () => {
     const mult = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.9, max: 2.6 }
     const c = ARMS.map(a => turnCostUsd(a.family, { inp: 0, out: 1000, cr: 0, cc: 0 }) * mult[a.effort])
     for (let i = 1; i < c.length; i++) expect(c[i]! >= c[i - 1]! - 1e-9).toBe(true)
+  })
+})
+
+describe('kinds and follow-ups on real-shaped prompts', () => {
+  test('kindOf by shape', () => {
+    const cases: Array<[string, string]> = [
+      ['yes', 'go'], ['continue', 'go'], ['where is my 2nd claude cli session?', 'question'], ['how to ssh without password', 'question'],
+      ['powershell -NoProfile -Command "Get-Date"', 'shell'], ['merge 2 puzzles and push', 'change'], ['ok lets make it for android', 'change'],
+      ['research open-source 2D games in this style', 'research'], ['[Image: original 1600x2288, displayed at 1399x2000.]', 'paste'], ['eta', 'chat'],
+    ]
+    for (const [text, want] of cases) expect(kindOf(text)).toBe(want)
+  })
+  test('ack needs a short acceptance, not a new request', () => {
+    const redo = /^no\b/i
+    expect(followUp('x', 'ok', 1000, redo)).toBe('ack')
+    expect(followUp('x', 'done', 1000, redo)).toBe('ack')
+    expect(followUp('x', 'ok can we move all the game files to D now', 1000, redo)).toBe('none')
+    expect(followUp('x', 'ok but it still fails', 1000, redo)).toBe('none')
+  })
+  test('templated image headers are not rephrases', () => {
+    const a = '[Image: original 2592x1518, displayed at 2000x1171. Multiply coordinates by 1.3]'
+    expect(followUp(a, a.replace('1171', '1172'), 1000, /^no\b/i)).toBe('none')
   })
 })
