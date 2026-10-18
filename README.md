@@ -71,7 +71,7 @@ claude plugin update budget-router@budget-router-kit
 - **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.
 - **Soft lock.** `/budget soft` stops the refusals at 100%: turns stay at the second cap instead. `/budget hard` brings the refusals back. For a real limit, add Claude Code's own `autoContinueAtUsageLimit` setting so a session waits for the reset.
 - **`/budget skills`** lists what the command and skill list costs (names plus descriptions, in estimated tokens, by plugin) and the longest descriptions.
-- **`/budget vet <path>`** reads a skill, agent, command or plugin folder before you install it and flags red flags: hidden instructions, `curl | bash`, broad `allowed-tools`, hooks, encoded blobs, data sent out, hidden unicode. It is advisory only: read everything yourself.
+- **`/budget vet <path>`** reads a skill, agent, command or plugin folder before you install it and flags red flags: hidden instructions, download-and-run commands, broad `allowed-tools`, hooks, encoded blobs, hidden unicode. It is advisory only: read everything yourself.
 
 ## Helper agents
 

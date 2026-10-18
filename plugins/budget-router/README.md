@@ -55,7 +55,7 @@ Every setting is a `userConfig` option, shown in `/config`.
 | `agent.offer` | Hides the agent types you list in `hideAgentsAtCritical` once usage passes the second threshold. The list is empty by default. |
 | `command.run` | Answers `/budget` and `/route` itself. |
 
-The plugin does not read credentials, tokens or key files. `/budget vet` only looks for such patterns in the text of a skill or plugin you point it at.
+The plugin does not read credentials, tokens or key files.
 
 ## License
 
