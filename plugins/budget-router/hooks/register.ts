@@ -768,7 +768,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     const base = armIndex(spec)
     const kind = currentBucket.split('|')[1] ?? 'general'
     const now = Date.now()
-    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, rand: Math.random })
+    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random })
     const live = o.learnMode === 'live'
     smartDecision = { kind, base, arm: live ? pick.arm : base, shadowArm: pick.arm, why: pick.why, explored: pick.explored && live }
     if (live && pick.arm !== base) {
@@ -1159,8 +1159,7 @@ export const register: Register = (on, options) => {
       if (sub === 'export') return { text: JSON.stringify({ seen: smartData.seen, cells: smartData.cells }, null, 1) }
       const rows = smartSummary(smartData, now)
       const sav = estimateSavings(smartData, now)
-      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints the counts (no prompt text is stored).'].join('
-') }
+      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints the counts (no prompt text is stored).'].join('\n') }
     }
     if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
     if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }

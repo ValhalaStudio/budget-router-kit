@@ -14,7 +14,7 @@ const base = armIndex({ family: 'sonnet', effort: 'high' })
 describe('cells', () => {
   test('decay halves after one half-life', () => {
     const c = addToCell(undefined, 1, true, 1)
-    expect(decayed(c, 1 + 14 * 24 * 3600_000).s).toBeCloseTo(0.5, 5)
+    expect(Math.abs(decayed(c, 1 + 14 * 24 * 3600_000).s - 0.5) < 1e-6).toBe(true)
   })
   test('armIndex maps unknown efforts down', () => {
     expect(armName(armIndex({ family: 'opus', effort: 'low' }))).toBe('opus·medium')
@@ -89,4 +89,19 @@ describe('signals and cost', () => {
     expect(turnCostUsd('opus', typical)).toBeGreaterThan(turnCostUsd('haiku', typical))
   })
   test('arms are ordered by cost', () => expect(ARMS.length).toBeGreaterThan(8))
+})
+
+describe('no evidence, no move', () => {
+  test('an untrained learner keeps the rule choice, except for rare exploration', () => {
+    const s = emptyStore()
+    for (let seed = 1; seed <= 40; seed++) {
+      const p = pickArm({ base, tier: 'standard', scope: scopeOf(s, 'code', 'p'), w: s.weights, x: [], now: 1, dailyUsedPct: 10, typical, rand: seeded(seed), exploresLeft: 12, explore: 0 })
+      expect(p.arm).toBe(base)
+    }
+  })
+  test('deep work never explores downward', () => {
+    const s = emptyStore()
+    const p = pickArm({ base, tier: 'deep', scope: scopeOf(s, 'code', 'p'), w: s.weights, x: [], now: 1, dailyUsedPct: 10, typical, rand: () => 0, exploresLeft: 12, explore: 1 })
+    expect(p.arm).toBe(base)
+  })
 })

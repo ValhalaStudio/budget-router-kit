@@ -195,6 +195,7 @@ export type PickInput = {
   rand?: () => number
   exploresLeft: number
   minSamples?: number
+  explore?: number // chance per turn of trying one cheaper step with no record
 }
 
 export type Pick = { arm: number; why: string; explored: boolean; scores: Array<{ arm: number; p: number; score: number }> }
@@ -219,21 +220,33 @@ export function pickArm(inp: PickInput): Pick {
   const scores: Pick['scores'] = []
   const cost = (i: number) => expectedCost(i, inp.scope.global[String(i)], inp.now, inp.typical, inp.prices)
   const minN = inp.minSamples ?? 5
-  let thinBelow = false
+  const seen = (i: number) => decayed(inp.scope.kind[armName(i)] ?? inp.scope.global[armName(i)], inp.now).n
+  const roll = may && rand() < (inp.explore ?? 0.1)
+  let tried = false
   for (let i = lo; i <= hi; i++) {
+    // No evidence, no move: a cheaper arm needs a record here (or the rare exploration roll),
+    // a dearer one needs a record that the rule choice keeps failing.
+    if (i < inp.base && seen(i) < minN && !(roll && i === inp.base - 1)) continue
+    if (i > inp.base && seen(inp.base) < minN) continue
+    if (i < inp.base && seen(i) < minN) tried = true
     const root = priorP(inp.w, inp.x, i, inp.base)
     const key = armName(i)
     const post = hierMean([inp.scope.global[key], inp.scope.kind[key], inp.scope.project[key]], root, inp.now)
     const p = sampleBeta(post.a, post.b, rand)
     const up = Math.min(ARMS.length - 1, i + 1)
     scores.push({ arm: i, p, score: cost(i) + (1 - p) * (cost(up) + q) })
-    if (i < inp.base && post.a + post.b - PRIOR_STRENGTH < minN) thinBelow = true
+  }
+  if (scores.length === 0) return { arm: inp.base, why: 'smart: rule choice holds', explored: false, scores }
+  if (tried) {
+    // the exploration step: take it, but only the one cheaper step
+    const t = scores.find(x => x.arm === inp.base - 1)
+    if (t) return { arm: t.arm, why: `smart: trying ${armName(t.arm)}`, explored: true, scores }
   }
   scores.sort((a, b) => a.score - b.score)
   // dominance: drop an arm that is dearer than another and no more likely to work
   const kept = scores.filter(s => !scores.some(o => o !== s && cost(o.arm) <= cost(s.arm) && o.p >= s.p && (cost(o.arm) < cost(s.arm) || o.p > s.p)))
   const best = (kept[0] ?? scores[0])!
-  const explored = may && thinBelow && best.arm < inp.base
+  const explored = false
   const why = best.arm === inp.base ? 'smart: rule choice holds' : best.arm < inp.base ? `smart: ${armName(best.arm)} (p≈${Math.round(best.p * 100)}%)${explored ? ', exploring' : ''}` : `smart: ${armName(best.arm)} (cheaper step has been failing here)`
   return { arm: best.arm, why, explored, scores }
 }

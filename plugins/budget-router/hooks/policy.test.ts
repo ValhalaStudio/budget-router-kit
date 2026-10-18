@@ -780,7 +780,7 @@ describe('v0.6 hooks in the engine', () => {
     expect(toasts.length).toBe(0)
   })
 
-  test('a step with a poor record here is moved up one', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+  test('a step with a poor record here is moved up one', { options: { classifier: 'heuristic', learnMode: 'classic', paceControl: false } }, async ($, on) => {
     mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
     quiet(on)
     await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
@@ -789,7 +789,7 @@ describe('v0.6 hooks in the engine', () => {
     expect(why.text).toContain('learned: ')
   })
 
-  test('finished turns are recorded and shown, a redo counts against the last one', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
+  test('finished turns are recorded and shown, a redo counts against the last one', { options: { classifier: 'heuristic', learnMode: 'classic', paceControl: false, reflect: false } }, async ($, on) => {
     mock.store(on)
     quiet(on)
     await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
@@ -799,6 +799,35 @@ describe('v0.6 hooks in the engine', () => {
     await $.prompt.submit({ text: 'no, that is wrong, try again', origin: { kind: 'composer' } } as never)
     report = await $.command.run({ command: 'budget', args: '' } as never)
     expect(report.text).toContain('deep|code: opus·high 0% of 1')
+  })
+
+  test('the smart learner records a turn with its cost, a redo flips it, reset clears it', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    await $.turn.complete({ ...(done() as object), usage: { model: 'claude-opus-4-1', input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never)
+    let r = await $.command.run({ command: 'budget', args: 'learn' } as never)
+    expect(r.text).toContain('1 turns seen')
+    expect(r.text).toContain('opus·high 100% of 1')
+    await $.prompt.submit({ text: 'no, that is wrong, try again', origin: { kind: 'composer' } } as never)
+    r = await $.command.run({ command: 'budget', args: 'learn' } as never)
+    expect(r.text).toContain('opus·high 0% of 1')
+    r = await $.command.run({ command: 'budget', args: 'learn reset' } as never)
+    expect(r.text).toContain('cleared')
+    r = await $.command.run({ command: 'budget', args: 'learn' } as never)
+    expect(r.text).toContain('0 turns seen')
+  })
+
+  test('shadow mode never changes the route', { options: { classifier: 'heuristic', paceControl: false, learnMode: 'shadow', learnExplore: 1 } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    for (let k = 0; k < 6; k++) {
+      await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+      await $.turn.complete(done())
+    }
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text.includes('-> opus·medium')).toBe(false)
+    expect(why.text).toContain('-> opus·high')
   })
 
   test('the learner can be switched off', { options: { classifier: 'heuristic', learn: false } }, async ($, on) => {
@@ -813,7 +842,7 @@ describe('v0.6 hooks in the engine', () => {
 })
 
 describe('wipe', () => {
-  test('/budget wipe deletes what the plugin stored', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
+  test('/budget wipe deletes what the plugin stored', { options: { classifier: 'heuristic', learnMode: 'classic', paceControl: false, reflect: false } }, async ($, on) => {
     mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } }, cmdstats: { k: { n: 5, last: 1, tool: 'Bash', sample: 'x' } } })
     on('ui.status', async () => ({ value: undefined }) as never)
     on('ui.toast', async () => ({ value: undefined }) as never)
@@ -828,5 +857,46 @@ describe('wipe', () => {
     expect(report.text).not.toContain('deep|code')
     const why = await $.command.run({ command: 'route', args: 'why' } as never)
     expect(why.text).toContain('no routed prompts yet')
+  })
+})
+
+// --- budget window edges ------------------------------------------------------------------
+
+describe('daily budget at the edges of the weekly window', () => {
+  const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const quiet = (on: any) => {
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+  }
+
+  test('on the last day the whole remainder of the week is today\'s budget', async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const rateLimits = [{ kind: 'seven_day', percentUsed: 60, resetsAt: new Date(Date.now() + 10 * 3_600_000).toISOString() }]
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    const r = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(r.text).toContain('of 40.0 weekly points')
+  })
+
+  test('a weekly reset in the middle of the day keeps what was spent and grants at least an even share', async ($, on) => {
+    const prev = { day: day(), windowReset: new Date(Date.now() - 3_600_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 0, seenAt: Date.now() - 60_000 }
+    mock.store(on, { ledger: prev })
+    quiet(on)
+    const rateLimits = [{ kind: 'seven_day', percentUsed: 2, resetsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() }]
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    const r = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(r.text).toContain('42.0 of 14.3 weekly points')
+  })
+
+  test('a new day starts from the first reading, not from yesterday\'s spend', async ($, on) => {
+    const prev = { day: '2000-01-01', windowReset: new Date(Date.now() + 2 * 86_400_000).toISOString(), windowStartPct: 10, carry: 5, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() - 86_400_000 }
+    mock.store(on, { ledger: prev })
+    quiet(on)
+    const rateLimits = [{ kind: 'seven_day', percentUsed: 50, resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }]
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    const r = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(r.text).toContain('0.0 of 25.0 weekly points')
   })
 })
