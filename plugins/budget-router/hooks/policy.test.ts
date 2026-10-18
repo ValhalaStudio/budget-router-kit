@@ -264,7 +264,7 @@ describe('vetting a skill file', () => {
     expect(verdict(bad)).toContain('DO NOT INSTALL')
     expect(vetText('---\nname: x\nallowed-tools: Bash\n---\nhi').some(f => f.what.includes('allowed-tools'))).toBe(true)
     expect(vetText('---\nname: x\nallowed-tools: Bash(git status:*)\n---\nhi').some(f => f.what.includes('allowed-tools'))).toBe(false)
-    expect(vetText('normal‮text').some(f => f.what.includes('unicode'))).toBe(true)
+    expect(vetText('normal\u202Etext').some(f => f.what.includes('unicode'))).toBe(true)
     expect(verdict(vetText('---\nname: log-triage\nallowed-tools: Read, Grep\n---\nReport the errors.'))).toContain('no red flags')
     expect(vetText('a'.repeat(10_001)).some(f => f.sev === 'low')).toBe(true)
     expect(verdict(vetText('hooks:\n  PreToolUse: x'))).toContain('REVIEW')
@@ -283,6 +283,14 @@ describe('v0.4 hooks in the engine', () => {
     expect(script.reason).toContain('Unreal editor')
     const bash = await $.tool.check({ tool: 'Bash', input: { command: 'ls' } } as never)
     expect(bash.decision).toBe('allow')
+  })
+
+  test('a deny from your settings stays a deny', async ($, on) => {
+    mock.store(on)
+    on('tool.check', async () => ({ decision: 'deny' as const, reason: 'blocked by a settings rule' }))
+    const script = await $.tool.check({ tool: 'mcp__unreal__ProgrammaticToolset.execute_tool_script', input: {} } as never)
+    expect(script.decision).toBe('deny')
+    expect(script.reason).toBe('blocked by a settings rule')
   })
 
   test('with the option off the script tool is left alone', { options: { askBeforeUnrealScripts: false } }, async ($, on) => {

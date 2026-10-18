@@ -41,6 +41,23 @@ Needs Claude Code 2.1.287 or newer and a Claude subscription (Pro or Max). On an
 
 Every setting is a `userConfig` option, shown in `/config`.
 
+## What each hook decides
+
+| Hook | What it does |
+|---|---|
+| `session.start` | Registers `/budget` and `/route`, loads saved settings, and learns your time zone offset (the small programs listed above). |
+| `prompt.context` | Adds one short guidance block once per conversation. |
+| `prompt.submit` | Picks the model tier for the turn. Refuses the prompt only when today's budget is spent, and not then if you ran `/budget unlock` or `/budget soft` or turned `lockAtLimit` off. May add one hidden hint line. |
+| `turn.step` | Sets model and effort for each request. Subagent requests are only ever lowered when a usage cap applies, never raised. |
+| `turn.complete` | Records token counts in the decision log. |
+| `session.measure` | Reads the rate-limit numbers Claude Code reports; raises a toast and a system note when a cap starts to apply. |
+| `agent.spawn` | Starts read-only helper types on Haiku when the call names no model. Refuses new subagents only when today's budget is spent (same exceptions as above). Never touches forks, resumes, teammates or workflow agents. |
+| `agent.offer` | Hides the agent types you list in `hideAgentsAtCritical` once usage passes the second threshold. The list is empty by default. |
+| `tool.check` | For Epic's Unreal `execute_tool_script` only: turns an allow into "ask you first". Never loosens a deny, and leaves every other tool alone. |
+| `command.run` | Answers `/budget` and `/route` itself. |
+
+The plugin does not read credentials, tokens or key files. `/budget vet` only looks for such patterns in the text of a skill or plugin you point it at.
+
 ## License
 
 GPL-3.0-or-later. Copyright (C) 2026 ValhalaStudio. See [LICENSE](LICENSE).

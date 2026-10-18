@@ -244,7 +244,7 @@ export function vetText(text: string): Finding[] {
   add('high', 'tells the model to keep something from you', /do not (tell|mention|inform|reveal)[^.\n]{0,50}(user|human|person)|without (telling|informing) the user|hide this from/i)
   add('high', 'downloads and runs code', /(curl|wget|Invoke-WebRequest|iwr)[^\n|]{0,200}\|\s*(sh|bash|iex|powershell|pwsh)\b|Invoke-Expression|\biex\b/i)
   add('high', 'loads instructions from a URL (they can change after review)', /(fetch|download|load|follow|read)[^.\n]{0,60}(instructions?|prompt|rules)[^.\n]{0,60}https?:\/\//i)
-  add('high', 'hidden or direction-changing unicode characters', /[​-‏⁠﻿‪-‮]/)
+  add('high', 'hidden or direction-changing unicode characters', /[\u200B-\u200F\u2060\uFEFF\u202A-\u202E]/)
   const granted = /^allowed-tools\s*:(.*)$/im.exec(text)?.[1]
   if (granted !== undefined && granted.split(',').some(tok => /^\s*(\*|(Bash|PowerShell|Shell)(\(\*\))?)\s*$/i.test(tok))) {
     out.push({ sev: 'high', what: 'grants itself broad tool permissions (allowed-tools)' })
