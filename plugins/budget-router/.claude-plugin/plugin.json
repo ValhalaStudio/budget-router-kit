@@ -1,7 +1,7 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
@@ -264,6 +264,12 @@
       "title": "Learner mode",
       "description": "live (cost-aware learner picks the model and effort), shadow (only logs what it would pick), classic (old success-rate learner) or off",
       "default": "live"
+    },
+    "priceTable": {
+      "type": "string",
+      "title": "Learner price table",
+      "description": "JSON of USD per million tokens per family, for example {\"opus\":{\"inp\":4,\"out\":20,\"read\":0.2,\"write\":5}}; blank uses list prices by model id",
+      "default": ""
     },
     "qualityWeight": {
       "type": "number",

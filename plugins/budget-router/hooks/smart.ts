@@ -155,9 +155,19 @@ export function sampleBeta(a: number, b: number, rand: () => number = Math.rando
 export type Price = { inp: number; out: number; read: number; write: number } // USD per million tokens
 /** Estimates, not an invoice. Override with the `priceTable` option when the real prices differ. */
 export const DEFAULT_PRICES: Record<Family, Price> = {
-  haiku: { inp: 1, out: 5, read: 0.1, write: 1.25 },
-  sonnet: { inp: 3, out: 15, read: 0.3, write: 3.75 },
-  opus: { inp: 5, out: 25, read: 0.5, write: 6.25 },
+  haiku: { inp: 1, out: 5, read: 0.1, write: 1.25 }, // Haiku 4.5, the id the router resolves to
+  sonnet: { inp: 2, out: 10, read: 0.2, write: 2.5 }, // Sonnet 5.5
+  opus: { inp: 4, out: 20, read: 0.2, write: 5 }, // Opus 5.5
+}
+
+/** Price for the model id that actually ran (list prices, cached 2026-10-06; cache writes assumed 1.25x input). */
+export function priceFor(modelId: string, family: Family): Price {
+  const id = modelId.toLowerCase()
+  if (/fable|mythos/.test(id)) return { inp: 10, out: 50, read: 0.25, write: 12.5 }
+  if (family === 'haiku' && /haiku-5/.test(id)) return { inp: 0.1, out: 0.5, read: 0.01, write: 0.125 }
+  if (family === 'sonnet' && /sonnet-4/.test(id)) return { inp: 3, out: 15, read: 0.3, write: 3.75 }
+  if (family === 'opus' && /opus-(5|4)(?!-5)/.test(id) && !/opus-5-5/.test(id)) return { inp: 5, out: 25, read: 0.5, write: 6.25 }
+  return DEFAULT_PRICES[family]
 }
 /** Extra thinking: higher effort writes more output tokens for the same answer. Rough multipliers on output. */
 export const EFFORT_OUT: Record<Arm['effort'], number> = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.9, max: 2.6 }
@@ -198,7 +208,7 @@ export type PickInput = {
   explore?: number // chance per turn of trying one cheaper step with no record
 }
 
-export type Pick = { arm: number; why: string; explored: boolean; scores: Array<{ arm: number; p: number; score: number }> }
+export type Choice = { arm: number; why: string; explored: boolean; scores: Array<{ arm: number; p: number; score: number }> }
 
 /** Window of arms the learner may pick from: one or two below the rule choice, one above. Deep work gets less room down, max none. */
 export function window(base: number, tier: string): [number, number] {
@@ -212,12 +222,12 @@ export function window(base: number, tier: string): [number, number] {
  * daily budget shrinks. Thompson sampling draws p from its posterior, so thin evidence explores
  * and strong evidence settles. Pruned: an arm that costs no less than a better-looking one is dropped.
  */
-export function pickArm(inp: PickInput): Pick {
+export function pickArm(inp: PickInput): Choice {
   const rand = inp.rand ?? Math.random
   const [lo, hi] = window(inp.base, inp.tier)
   const q = (inp.qualityWeight ?? 0.05) * (1 - Math.min(100, Math.max(0, inp.dailyUsedPct)) / 100)
   const may = inp.tier !== 'deep' && inp.tier !== 'max' && inp.exploresLeft > 0
-  const scores: Pick['scores'] = []
+  const scores: Choice["scores"] = []
   const cost = (i: number) => expectedCost(i, inp.scope.global[String(i)], inp.now, inp.typical, inp.prices)
   const minN = inp.minSamples ?? 5
   const seen = (i: number) => decayed(inp.scope.kind[armName(i)] ?? inp.scope.global[armName(i)], inp.now).n
@@ -259,9 +269,10 @@ export type SmartStore = {
   cells: Record<string, Record<string, Cell>> // scope key -> arm name -> cell
   explore: { day: string; n: number }
   seen: number
+  saved: number // running USD saved (or spent extra, if negative) versus the rule choice
 }
 
-export const emptyStore = (): SmartStore => ({ v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 0 })
+export const emptyStore = (): SmartStore => ({ v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 0, saved: 0 })
 export const MAX_SCOPES = 120
 
 export const scopeKeys = (kind: string, projectHash: string) => ({ global: 'g', kind: `k:${kind}`, project: `p:${projectHash}:${kind}` })
@@ -291,7 +302,13 @@ export function record(s: SmartStore, o: Outcome): SmartStore {
     const size = (k: string) => Object.values(cells[k] ?? {}).reduce((a, c) => a + c.n, 0)
     for (const k of names.filter(n => n !== 'g').sort((a, b) => size(a) - size(b)).slice(0, names.length - MAX_SCOPES)) delete cells[k]
   }
-  return { ...s, cells, weights: trainWeights(s.weights, o.x, o.arm, o.base, o.ok), seen: s.seen + 1 }
+  // What the rule choice would have cost, from its own measured average, to keep a running saving.
+  let saved = s.saved ?? 0
+  if (o.arm !== o.base) {
+    const b = decayed(s.cells.g?.[armName(o.base)], o.now)
+    if (b.n >= 3) saved += b.c / b.n - o.costUsd
+  }
+  return { ...s, cells, saved, weights: trainWeights(s.weights, o.x, o.arm, o.base, o.ok), seen: s.seen + 1 }
 }
 
 /** The user's reply showed the last turn's outcome was the opposite. */
@@ -362,17 +379,7 @@ export function smartSummary(s: SmartStore, now: number): string[] {
   return rows.slice(0, 8)
 }
 
-/** Money the learner saved versus always taking the rule choice, from the arm costs it has measured. */
-export function estimateSavings(s: SmartStore, now: number): number {
-  const g = s.cells.g ?? {}
-  let saved = 0
-  for (const [name, c0] of Object.entries(g)) {
-    const idx = ARMS.findIndex((_, i) => armName(i) === name)
-    const c = decayed(c0, now)
-    if (idx < 1 || c.n < 3) continue
-    const up = decayed(g[armName(idx + 1)], now)
-    if (up.n < 3) continue
-    saved += Math.max(0, up.c / up.n - c.c / c.n) * c.n * 0.5
-  }
-  return saved
+/** Money the learner saved versus always taking the rule choice (negative: it spent more), from measured averages. */
+export function estimateSavings(s: SmartStore): number {
+  return s.saved ?? 0
 }

@@ -11,7 +11,7 @@ Contact: open an issue at https://github.com/ValhalaStudio/budget-router-kit/iss
 | The first 2,000 characters of each prompt | To label the task (trivial, light, standard, deep) | To Claude Haiku, through Claude Code's own model call on your account. Nothing else receives it. Set the `classifier` option to `heuristic` and nothing is sent. |
 | Rate-limit percentages and context size that Claude Code reports | To keep you inside a daily budget and warn about expiring caches | Stays in memory and in the local store |
 | Each shell command (Bash or PowerShell) as it runs | To notice commands you repeat (runbook memory) | Counted in the local store. Up to 150 repeated commands are kept, with the text of the latest run of each. Turn it off with the `runbooks` option. |
-| Whether each tool call failed | To raise effort when a turn goes badly and to learn which model step worked | A counter in memory; the learner keeps only success and failure counts per kind of prompt |
+| Whether each tool call failed | To raise effort when a turn goes badly and to learn which model step worked | A counter in memory; the learner keeps only success and failure counts, token costs and hashed weights per kind of work, never prompt text. A short follow-up phrase (such as "try again" or "thanks") is compared in memory with your last prompt and then dropped |
 | The first 300 characters of a prompt and 600 of the reply | Only if you turn on `reflect` (off by default): to ask Haiku whether an unclear turn succeeded | To Claude Haiku through your own account, a few times a day at most |
 | The HOME or USERPROFILE environment variable | To find the folder for saved runbook scripts | Read only; not stored |
 
@@ -19,7 +19,7 @@ It does not read your conversation history, memory, summaries or uploaded files.
 
 ## What it stores on your computer
 
-In the plugin's own store: the usage ledger, model ids seen, burn-rate samples, a decision log (up to 200 rows of tier, reason, model and token counts, with no prompt text), pace-controller state, counts for the learner (up to 60 kinds of prompt), and the repeated-command counts and runbook list described above.
+In the plugin's own store: the usage ledger, model ids seen, burn-rate samples, a decision log (up to 200 rows of tier, reason, model and token counts, with no prompt text), pace-controller state, counts and token costs for the learner (per kind of work and per project; the project is a short hash of the folder path, never the path), a table of hashed word weights that lets it generalise (256 numbers; the words themselves are not kept and cannot be recovered from them), and the repeated-command counts and runbook list described above.
 
 It writes a file outside the store only when you run `/runbook save`: one script in the runbook folder (default `.claude/runbooks` in your home folder). Commands that look like they hold a key, a login or another private value are refused.
 

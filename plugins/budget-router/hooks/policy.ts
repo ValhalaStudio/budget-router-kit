@@ -460,9 +460,9 @@ export function suggestFrom(text: string, idx: CatalogIndex, opts: SuggestOption
 
 // List prices in USD per million tokens: cache read and 1-hour cache write.
 const CACHE_PRICE: Record<Family, { read: number; write: number }> = {
-  opus: { read: 0.2, write: 8 },
-  sonnet: { read: 0.1, write: 4 },
-  haiku: { read: 0.01, write: 0.2 },
+  opus: { read: 0.2, write: 5 }, // Opus 5.5
+  sonnet: { read: 0.2, write: 2.5 }, // Sonnet 5.5
+  haiku: { read: 0.1, write: 1.25 }, // Haiku 4.5
 }
 
 export const usd = (n: number): string => (n < 0.01 ? '<$0.01' : n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`)

@@ -571,10 +571,10 @@ describe('ghost-token guard', () => {
     expect(idleRebuild(300_000, undefined, warm, 60_000, 'sonnet')).toBeUndefined()
     const r = idleRebuild(300_000, 90 * 60_000, warm, 60_000, 'sonnet')
     expect(r?.idleMin).toBe(90)
-    expect(Math.round((r?.rebuildUsd ?? 0) * 100) / 100).toBe(1.2)
-    expect(Math.round((r?.warmUsd ?? 0) * 100) / 100).toBe(0.03)
+    expect(Math.round((r?.rebuildUsd ?? 0) * 100) / 100).toBe(0.75)
+    expect(Math.round((r?.warmUsd ?? 0) * 100) / 100).toBe(0.06)
     expect(idleText(r!)).toContain('300k')
-    expect(idleText(r!)).toContain('$1.20')
+    expect(idleText(r!)).toContain('$0.75')
   })
 
   test('size notices fire on each multiple of the threshold and say what a step costs', async () => {
@@ -898,5 +898,43 @@ describe('daily budget at the edges of the weekly window', () => {
     await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
     const r = await $.command.run({ command: 'budget', args: '' } as never)
     expect(r.text).toContain('0.0 of 25.0 weekly points')
+  })
+})
+
+describe('per-model weekly limits', () => {
+  test('a nearly spent Opus weekly limit routes a deep prompt to Sonnet', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+    mock.store(on)
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    const reset = new Date(Date.now() + 3 * 86_400_000).toISOString()
+    const rateLimits = [
+      { kind: 'seven_day', percentUsed: 20, resetsAt: reset },
+      { kind: 'seven_day_opus', percentUsed: 95, resetsAt: reset },
+    ]
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('-> sonnet·high')
+    expect(why.text).toContain('opus weekly 95% used')
+  })
+})
+
+describe('fable is never adopted as the opus id', () => {
+  test('a turn on Fable leaves the opus route on Opus', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+    mock.store(on)
+    on('ui.status', async () => ({ value: undefined }) as never)
+    const seen: string[] = []
+    on('turn.step', async function* (_$: unknown, e: { model: string; turnId: string; index: number }) {
+      seen.push(e.model)
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+    })
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    for (const model of ['claude-fable-5-1', 'claude-sonnet-5-5']) {
+      for await (const _c of $.turn.step({ turnId: 't', index: 0, model, effort: 'high', messageCount: 2 } as never)) { /* drain */ }
+    }
+    expect(seen.every(m => m.includes('opus'))).toBe(true)
   })
 })

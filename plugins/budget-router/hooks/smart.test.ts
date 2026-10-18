@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
+import { priceFor, ARMS, addToCell, armIndex, armName, correct, decayed, emptyStore, exploresLeft, features, followUp, hierMean, noteExplore, pickArm, priorP, record, sampleBeta, scopeOf, similarity, turnCostUsd, window } from './smart'
 
 const seeded = (seed = 1) => {
   let s = seed
@@ -103,5 +103,28 @@ describe('no evidence, no move', () => {
     const s = emptyStore()
     const p = pickArm({ base, tier: 'deep', scope: scopeOf(s, 'code', 'p'), w: s.weights, x: [], now: 1, dailyUsedPct: 10, typical, rand: () => 0, exploresLeft: 12, explore: 1 })
     expect(p.arm).toBe(base)
+  })
+})
+
+describe('prices', () => {
+  test('the model id picks the price', () => {
+    expect(priceFor('claude-haiku-5-5', 'haiku').inp).toBe(0.1)
+    expect(priceFor('claude-haiku-4-5-20251001', 'haiku').inp).toBe(1)
+    expect(priceFor('claude-opus-5-5', 'opus').out).toBe(20)
+    expect(priceFor('claude-opus-4-8', 'opus').out).toBe(25)
+    expect(priceFor('claude-sonnet-5-5', 'sonnet').inp).toBe(2)
+  })
+})
+
+describe('fable', () => {
+  test('is priced by its own id', () => expect(priceFor('claude-fable-5-1', 'opus').out).toBe(50))
+})
+
+describe('savings tally', () => {
+  test('a cheaper turn than the rule choice average adds to the saving', () => {
+    let s = emptyStore()
+    for (let i = 0; i < 4; i++) s = record(s, { kind: 'k', project: 'p', arm: base, base, x: [], ok: true, costUsd: 0.10, now: 1 })
+    s = record(s, { kind: 'k', project: 'p', arm: base - 1, base, x: [], ok: true, costUsd: 0.04, now: 1 })
+    expect(Math.abs((s.saved ?? 0) - 0.06) < 1e-9).toBe(true)
   })
 })

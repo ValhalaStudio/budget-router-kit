@@ -18,8 +18,8 @@ import {
 import type { Finding, LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
-import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, turnCostUsd } from './smart'
-import type { SmartStore, Usage } from './smart'
+import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
+import type { Price, SmartStore, Usage } from './smart'
 import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
 import type { CmdStats, Learned, Runbook } from './policy'
 
@@ -101,6 +101,7 @@ type Opts = {
   learnExplore: number
   learnMode: 'live' | 'shadow' | 'classic' | 'off'
   qualityWeight: number
+  priceTable?: Record<Family, Price>
   reflect: boolean
   reflectPerDay: number
 }
@@ -182,6 +183,22 @@ const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite
 const str = (v: unknown, d: string) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : d)
 const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
 
+// priceTable: {"haiku":{"inp":1,"out":5,"read":0.1,"write":1.25},"sonnet":{...},"opus":{...}}, USD per million tokens.
+function parsePrices(raw: unknown): Record<Family, Price> | undefined {
+  try {
+    const t = typeof raw === 'string' && raw.trim() !== '' ? (JSON.parse(raw) as Record<string, Partial<Price>>) : undefined
+    if (!t) return undefined
+    const out = { ...DEFAULT_PRICES }
+    for (const f of FAMILIES) {
+      const p = t[f]
+      if (p && [p.inp, p.out, p.read, p.write].every(n => typeof n === 'number' && n >= 0)) out[f] = p as Price
+    }
+    return out
+  } catch {
+    return undefined
+  }
+}
+
 function readOptions(options: PluginOptions): Opts {
   return {
     classifier: str(options.classifier, 'haiku'),
@@ -231,6 +248,7 @@ function readOptions(options: PluginOptions): Opts {
     learnExplore: num(options.learnExplore, 0.1),
     learnMode: (['live', 'shadow', 'classic', 'off'].includes(str(options.learnMode, 'live')) ? str(options.learnMode, 'live') : 'live') as Opts['learnMode'],
     qualityWeight: num(options.qualityWeight, 0.05),
+    priceTable: parsePrices(options.priceTable),
     reflect: bool(options.reflect, false),
     reflectPerDay: num(options.reflectPerDay, 8),
   }
@@ -255,7 +273,8 @@ const modelId = (f: Family) => (isAlias(o.models[f]) ? (learned[f] ?? KNOWN_IDS[
 
 async function learn($: EngineInterface, model: string) {
   const f = familyOf(model)
-  if (!/^claude-/.test(model) || learned[f] === model) return
+  // Fable and Mythos rank above Opus but are not a tier this router routes to; never adopt one as the Opus id.
+  if (!/^claude-/.test(model) || /fable|mythos/i.test(model) || learned[f] === model) return
   const hadOlder = learned[f] !== undefined
   learned = { ...learned, [f]: model }
   if (hadOlder) {
@@ -457,6 +476,21 @@ const projectHash = (cwd: string) => {
   for (let i = 0; i < cwd.length; i++) h = (Math.imul(h, 33) ^ cwd.charCodeAt(i)) >>> 0
   return cwd === '' ? 'x' : h.toString(36)
 }
+// The hook event carries no working directory, but a spawned process starts in the project folder.
+async function detectProject($: EngineInterface) {
+  for (const cmd of [['pwd'], ['powershell', '-NoProfile', '-Command', '(Get-Location).Path']]) {
+    try {
+      const r = await $.process.run(cmd, { timeoutMs: 8000 })
+      const dir = r.stdout.trim()
+      if (dir !== '') {
+        smartProject = projectHash(dir.toLowerCase())
+        return
+      }
+    } catch {
+      // try the next one
+    }
+  }
+}
 const smartOn = () => o.learn && (o.learnMode === 'live' || o.learnMode === 'shadow')
 
 const SHELLS = new Set(['Bash', 'PowerShell'])
@@ -500,7 +534,7 @@ async function observeTool($: EngineInterface, e: { tool: string; agentId?: stri
 }
 
 // After each main turn: record how it went for the learner.
-async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }, u?: Usage & { family: Family }) {
+async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }, u?: Usage & { family: Family; model: string }) {
   if (!v06Loaded) await loadV06($)
   if (u) lastTurnUsage = { inp: u.inp, out: u.out, cr: u.cr, cc: u.cc }
   if (o.learn && smartPending) {
@@ -508,7 +542,7 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
     smartPending = undefined
     try {
       const ok = !e.isAborted && turnErrors <= 1
-      const cost = u ? turnCostUsd(u.family, u) : 0
+      const cost = u ? turnCostUsd(u.family, u, o.priceTable ? o.priceTable : { ...DEFAULT_PRICES, [u.family]: priceFor(u.model, u.family) }) : 0
       smartLast = { ...sp, ok, at: Date.now() }
       smartData = smartRecord(smartData, { kind: sp.kind, project: sp.project, arm: sp.arm, base: sp.base, x: sp.x, ok, costUsd: cost, now: Date.now() })
       await $.store.set(SMART_KEY, smartData)
@@ -739,6 +773,10 @@ async function classify($: EngineInterface, raw: string, prev: Tier | undefined)
   return heuristic(text, prev)
 }
 
+// Weekly percent used per model family, when the plan reports one.
+let famWeekly: Partial<Record<Family, number>> = {}
+const FAMILY_FULL = 92
+
 let smartDecision: { kind: string; base: number; arm: number; shadowArm: number; why: string; explored: boolean } | undefined
 const pickToSpec = (arm: number): Spec => {
   const a = ARMS[arm]!
@@ -785,6 +823,16 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
         spec = moved
         notes.push(mv.why)
       }
+    }
+  }
+  // A model whose own weekly limit is nearly spent is skipped, one family down.
+  if (!pin) {
+    for (let n = 0; n < 2; n++) {
+      const used = famWeekly[spec.family]
+      if (used === undefined || used < FAMILY_FULL || spec.family === 'haiku') break
+      const down: Family = spec.family === 'opus' ? 'sonnet' : 'haiku'
+      notes.push(`${spec.family} weekly ${Math.round(used)}% used`)
+      spec = { family: down, effort: spec.effort === 'max' || spec.effort === 'xhigh' ? 'high' : spec.effort } as Spec
     }
   }
   // Pace control: spending ahead of an even day sheds one or two cost steps before any cap
@@ -891,6 +939,7 @@ export const register: Register = (on, options) => {
         }
       }
     }
+    await detectProject($)
     await $.command.register({
       name: 'budget',
       description: "Show today's Claude usage budget and route; 'unlock' overrides the lock for 1 hour",
@@ -933,6 +982,12 @@ export const register: Register = (on, options) => {
       lastSizeBucket = b
     }
     const now = Date.now()
+    // Some plans report a weekly limit per model (seven_day_opus, seven_day_sonnet).
+    famWeekly = {}
+    for (const r of e.rateLimits) {
+      const m = /^seven_day_(opus|sonnet)$/.exec(r.kind)
+      if (m) famWeekly[m[1] as Family] = r.percentUsed
+    }
     const prev = await loadLedger($)
     const l = absorb(prev, e.rateLimits, now)
     if (l) {
@@ -1004,7 +1059,6 @@ export const register: Register = (on, options) => {
         c = { tier: 'standard', why: `${c.why}; unreal build text` }
       }
       currentBucket = o.learn ? bucketOf(c.tier, e.text) : ''
-      smartProject = projectHash((e as { cwd?: string }).cwd ?? '')
       smartX = features(e.text, ctxTokens)
       route = decide(c.tier, c.why, p)
       if (smartDecision) {
@@ -1124,7 +1178,7 @@ export const register: Register = (on, options) => {
     const u = r.usage ?? e.usage
     if (e.agentId === undefined) {
       lastMainTurnAt = Date.now()
-      await afterMainTurn($, e, u ? { inp: u.input_tokens, out: u.output_tokens, cr: u.cache_read_input_tokens, cc: u.cache_creation_input_tokens, family: familyOf(u.model) } : undefined)
+      await afterMainTurn($, e, u ? { inp: u.input_tokens, out: u.output_tokens, cr: u.cache_read_input_tokens, cc: u.cache_creation_input_tokens, family: familyOf(u.model), model: u.model } : undefined)
     }
     if (u) {
       await addLog($, {
@@ -1158,7 +1212,7 @@ export const register: Register = (on, options) => {
       }
       if (sub === 'export') return { text: JSON.stringify({ seen: smartData.seen, cells: smartData.cells }, null, 1) }
       const rows = smartSummary(smartData, now)
-      const sav = estimateSavings(smartData, now)
+      const sav = estimateSavings(smartData)
       return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints the counts (no prompt text is stored).'].join('\n') }
     }
     if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
