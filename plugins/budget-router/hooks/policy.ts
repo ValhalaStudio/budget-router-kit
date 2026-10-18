@@ -199,7 +199,7 @@ export function projectExhaustion(samples: readonly PaceSample[], now: number, w
   return { ratePerHour: rate, at: Math.max(now, last.t + ((100 - last.daily) / rate) * 3_600_000) }
 }
 
-export const estimateTokens = (chars: number) => Math.ceil(chars / 4)
+export const roughSize = (chars: number) => Math.ceil(chars / 4)
 
 export type CmdRow = { name: string; description: string; source: string; plugin?: string }
 
@@ -209,7 +209,7 @@ export function auditCommands(rows: readonly CmdRow[]): string {
   const total = own.reduce((n, r) => n + r.description.length + r.name.length + 4, 0)
   const lines = [
     'Budget router: command and skill list',
-    `  ${own.length} entries from plugins, your files and MCP servers; about ${estimateTokens(total)} tokens of names and descriptions (estimate, chars/4).`,
+    `  ${own.length} entries from plugins, your files and MCP servers; about ${roughSize(total)} tokens of names and descriptions (estimate, chars/4).`,
     '  Skills and plugin commands share this list; the model reads these lines every session.',
   ]
   const by = new Map<string, { n: number; chars: number }>()
@@ -221,10 +221,10 @@ export function auditCommands(rows: readonly CmdRow[]): string {
     by.set(key, row)
   }
   lines.push('  by source:')
-  for (const [key, v] of [...by].sort((a, b) => b[1].chars - a[1].chars).slice(0, 8)) lines.push(`    ${key}: ${v.n} entries, ~${estimateTokens(v.chars)} tokens`)
+  for (const [key, v] of [...by].sort((a, b) => b[1].chars - a[1].chars).slice(0, 8)) lines.push(`    ${key}: ${v.n} entries, ~${roughSize(v.chars)} tokens`)
   lines.push('  longest descriptions:')
   for (const r of [...own].sort((a, b) => b.description.length - a.description.length).slice(0, 8)) {
-    lines.push(`    ${r.name} (${r.plugin ?? r.source}): ${r.description.length} chars, ~${estimateTokens(r.description.length)} tokens`)
+    lines.push(`    ${r.name} (${r.plugin ?? r.source}): ${r.description.length} chars, ~${roughSize(r.description.length)} tokens`)
   }
   lines.push('  To trim: plugin skills and commands are switched off in /plugin (a whole plugin at once); your own skills can be set to name-only or off in /skills (skillOverrides does not apply to plugin skills).')
   return lines.join('\n')
