@@ -1,6 +1,6 @@
 {
   "name": "budget-router",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "author": {
     "name": "ValhalaStudio"
   },
@@ -15,6 +15,9 @@
     "subagents",
     "unreal-engine"
   ],
+  "documentationUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/README.md",
+  "supportUrl": "https://github.com/ValhalaStudio/budget-router-kit/issues",
+  "privacyPolicyUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/README.md#what-it-runs-reads-sends-and-stores",
   "userConfig": {
     "classifier": {
       "type": "string",
