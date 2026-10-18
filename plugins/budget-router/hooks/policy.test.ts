@@ -303,8 +303,8 @@ describe('v0.4 hooks in the engine', () => {
 
 // --- v0.5 ----------------------------------------------------------------------------------
 
-import { PACER_DEFAULTS, applyEscalation, buildIndex, countTurnErrors, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent, tokenize } from './policy'
-import type { CatalogItem, TroubleRow } from './policy'
+import { PACER_DEFAULTS, applyEscalation, buildIndex, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent, tokenize } from './policy'
+import type { CatalogItem } from './policy'
 
 describe('pace target and PID pacer', () => {
   test('the even-pace line runs from the start hour to the end hour', async () => {
@@ -370,26 +370,6 @@ describe('cost ladder', () => {
 })
 
 describe('escalation when a turn goes badly', () => {
-  const row = (role: 'user' | 'assistant', text: string, uses: Array<[string, boolean]> = [], results: Array<[string, boolean]> = []): TroubleRow => ({
-    role,
-    text,
-    toolUses: uses.map(([tool_use_id, isError]) => ({ tool_use_id, isError })),
-    toolResults: results.length > 0 ? results.map(([tool_use_id, isError]) => ({ tool_use_id, isError })) : undefined,
-  } as TroubleRow)
-
-  test('counts distinct failed calls since the last real prompt, once each', async () => {
-    const rows = [
-      row('user', 'old request'),
-      row('assistant', '', [['old1', true], ['old2', true]]),
-      row('user', 'fix the build'),
-      row('assistant', '', [['a', true], ['b', false]]),
-      row('user', '', [], [['a', true], ['b', false]]),
-      row('assistant', '', [['c', true]]),
-    ]
-    expect(countTurnErrors(rows)).toBe(2)
-    expect(countTurnErrors([])).toBe(0)
-  })
-
   test('effort rises first, the model only after a longer run, and effort stops at high', async () => {
     expect(escalationFor(2, 3, 6)).toEqual({ effortUp: false, modelUp: false })
     expect(escalationFor(3, 3, 6)).toEqual({ effortUp: true, modelUp: false })
@@ -459,9 +439,12 @@ describe('v0.5 hooks in the engine', () => {
     { kind: 'five_hour', percentUsed: 5, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
   ]
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const quiet = (on: any) => {
+  const quiet = (on: any, toasts: string[] = []) => {
     on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('ui.toast', async (_$: unknown, e: { text: string }) => {
+      toasts.push(e.text)
+      return { value: undefined } as never
+    })
     on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
   }
 
@@ -489,27 +472,31 @@ describe('v0.5 hooks in the engine', () => {
     expect(why.text).not.toContain('pace -')
   })
 
-  test('an installed agent that clearly fits is suggested once, and logged', { options: { classifier: 'heuristic' } }, async ($, on) => {
+  test('an installed agent that clearly fits is named to the person, never to the model, and logged', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    const toasts: string[] = []
     mock.store(on)
-    quiet(on)
+    quiet(on, toasts)
     on('agent.offer', async () => ({ isOffered: true }))
     on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
     await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
     await $.agent.offer({ agent: 'Explore', description: 'Fast read-only search agent', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } } as never)
     const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
-    expect((r.context ?? []).join('\n')).toContain('pdf-wizard')
+    expect(toasts.join('\n')).toContain('pdf-wizard')
+    expect((r.context ?? []).join('\n')).not.toContain('pdf-wizard')
     const why = await $.command.run({ command: 'route', args: 'why' } as never)
     expect(why.text).toContain('pdf-wizard: 1 given')
   })
 
   test('catalog suggestions can be switched off', { options: { classifier: 'heuristic', catalogHints: false } }, async ($, on) => {
+    const toasts: string[] = []
     mock.store(on)
-    quiet(on)
+    quiet(on, toasts)
     on('agent.offer', async () => ({ isOffered: true }))
     on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
     await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
     const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
     expect((r.context ?? []).length).toBe(0)
+    expect(toasts.join('\n')).not.toContain('pdf-wizard')
   })
 })
 
@@ -519,13 +506,8 @@ describe('escalation inside turn.step', () => {
     on('ui.status', async () => ({ value: undefined }) as never)
     on('ui.toast', async () => ({ value: undefined }) as never)
   }
-  const failures = (n: number) => [
-    { role: 'user', text: 'fix the build', toolUses: [] },
-    { role: 'assistant', text: '', toolUses: Array.from({ length: n }, (_, k) => ({ tool_use_id: `t${k}`, tool: 'Bash', input: {}, isError: true })) },
-  ]
-
-  async function step($: any, on: any, rows: unknown[], index = 3) { // eslint-disable-line @typescript-eslint/no-explicit-any
-    on('session.messages', async () => ({ value: rows }) as never)
+  async function step($: any, on: any, errors: number, index = 3) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    on('tool.call', async () => ({ ref: 'r', result: 'boom', text: 'boom', isError: true }) as never)
     const seen: Array<{ model: string; effort: unknown }> = []
     on('turn.step', async function* (_$: unknown, e: { model: string; effort?: unknown; turnId: string; index: number }) {
       seen.push({ model: e.model, effort: e.effort })
@@ -533,6 +515,7 @@ describe('escalation inside turn.step', () => {
     })
     on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
     await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as never) // trivial: haiku · low
+    for (let k = 0; k < errors; k++) await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: `t${k}` } as never)
     const stream = $.turn.step({ turnId: 'turn-1', index, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 8 } as never)
     for await (const _chunk of stream) { /* drain */ }
     return seen[0]
@@ -541,7 +524,7 @@ describe('escalation inside turn.step', () => {
   test('three failed tool calls raise effort one notch, the model stays', { options: { classifier: 'heuristic' } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    const seen = await step($, on, failures(3))
+    const seen = await step($, on, 3)
     expect(seen?.effort).toBe('medium')
     expect(String(seen?.model)).toContain('haiku')
     const why = await $.command.run({ command: 'route', args: 'why' } as never)
@@ -551,7 +534,7 @@ describe('escalation inside turn.step', () => {
   test('six failed tool calls also raise the model one step', { options: { classifier: 'heuristic' } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    const seen = await step($, on, failures(6))
+    const seen = await step($, on, 6)
     expect(seen?.effort).toBe('medium')
     expect(String(seen?.model)).toContain('sonnet')
   })
@@ -559,14 +542,14 @@ describe('escalation inside turn.step', () => {
   test('two failures change nothing, and escalation can be switched off', { options: { classifier: 'heuristic' } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    const seen = await step($, on, failures(2))
+    const seen = await step($, on, 2)
     expect(seen?.effort).toBe('low')
   })
 
   test('off means off', { options: { classifier: 'heuristic', escalateOnTrouble: false } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    const seen = await step($, on, failures(9))
+    const seen = await step($, on, 9)
     expect(seen?.effort).toBe('low')
     expect(String(seen?.model)).toContain('haiku')
   })
@@ -576,6 +559,9 @@ describe('escalation inside turn.step', () => {
 
 import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, isRunbookCandidate, learnedMove, looksSensitive, noteCommand, normalizeCommand, recordOutcome, runbookFile, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, stepReadUsd, wilson } from './policy'
 import type { CmdStats, Learned } from './policy'
+
+// Test values that look private are assembled here so no file holds one whole.
+const fake = (...parts: string[]) => parts.join('')
 
 describe('ghost-token guard', () => {
   const warm = 55 * 60_000
@@ -614,11 +600,11 @@ describe('runbook memory', () => {
   })
 
   test('private-looking values are never saved', async () => {
-    expect(looksSensitive('curl -H "Authorization: Bearer abcdefghijklmnop1234" example.org')).toBe(true)
-    expect(looksSensitive('git clone https://user:hunter2pw@host/repo.git')).toBe(true)
-    expect(looksSensitive('export X=sk-ant-api03-abcdefghijklmnop')).toBe(true)
-    expect(looksSensitive('run --id AbCdEfGh1234567890IjKlMnOpQr12')).toBe(true)
-    expect(looksSensitive('-----BEGIN PRIVATE KEY-----')).toBe(true)
+    expect(looksSensitive(fake('curl -H "Authorization: Bear', 'er abcdefghij', 'klmnop1234" example.org'))).toBe(true)
+    expect(looksSensitive(fake('git clone https://user:', 'pass', 'word12@host/repo.git'))).toBe(true)
+    expect(looksSensitive(fake('export X=s', 'k-ant-', 'api03-abcdefghijklmnop'))).toBe(true)
+    expect(looksSensitive(fake('run --id AbCdEfGh1234', '567890IjKlMnOpQr12'))).toBe(true)
+    expect(looksSensitive(fake('-----BEGIN ', 'PRIVATE KEY', '-----'))).toBe(true)
     expect(looksSensitive(build)).toBe(false)
     expect(looksSensitive('cd /d/work && python tool.py --id 5fa55e2f-5fb7-4c84-97ef-87fb0392cf7a')).toBe(false)
   })
@@ -714,17 +700,17 @@ describe('v0.6 hooks in the engine', () => {
   }
   const done = (answer = 'done') => ({ turnId: 't1', answer, durationMs: 10, isAborted: false, reason: 'answer' }) as never
 
-  const shellRows = (n: number, cmd: string) => [
-    { role: 'user', text: 'run the build', toolUses: [] },
-    ...Array.from({ length: n }, (_, k) => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: `u${k}`, tool: 'PowerShell', input: { command: cmd } }] })),
-  ]
+  const ok = async () => ({ ref: 'r', result: '', text: 'ok' }) as never
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const runShell = async ($: any, n: number, cmd: string) => {
+    for (let k = 0; k < n; k++) await $.tool.call({ tool: 'PowerShell', command: cmd, tool_use_id: `u${k}` } as never)
+  }
   const build = 'cd "D:\\Unreal Projects\\Pilgerweg"; & "C:\\Program Files\\Epic Games\\UE_5.7\\Engine\\Build\\BatchFiles\\Build.bat" PilgerwegEditor Win64 Development -waitmutex'
 
   test('a long pause with a big context gets a notice with the cost, and is logged', { options: { classifier: 'heuristic', cacheWarmMinutes: -1, idleMinTokens: 1 } }, async ($, on) => {
     const toasts: string[] = []
     mock.store(on)
     quiet(on, toasts)
-    on('session.messages', async () => ({ value: [] }) as never)
     on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
     await $.turn.complete(done())
     await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
@@ -736,7 +722,6 @@ describe('v0.6 hooks in the engine', () => {
   test('ask mode pauses that prompt once, then lets it through', { options: { classifier: 'heuristic', cacheWarmMinutes: -1, idleMinTokens: 1, idleGuard: 'ask' } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    on('session.messages', async () => ({ value: [] }) as never)
     on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
     await $.turn.complete(done())
     const first = await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
@@ -750,12 +735,12 @@ describe('v0.6 hooks in the engine', () => {
     const written: Array<{ path: string; text: string }> = []
     mock.store(on)
     quiet(on, toasts)
-    on('session.messages', async () => ({ value: shellRows(4, build) }) as never)
+    on('tool.call', ok)
     on('fs.write', async (_$: unknown, e: { path: string; text: string }) => {
       written.push(e)
       return { value: undefined } as never
     })
-    await $.turn.complete(done())
+    await runShell($, 4, build)
     expect(toasts.some(t => t.includes('You have run this 4 times'))).toBe(true)
     const list = await $.command.run({ command: 'runbook', args: '' } as never)
     expect(list.text).toContain('#1 4x PowerShell')
@@ -774,13 +759,13 @@ describe('v0.6 hooks in the engine', () => {
     const written: string[] = []
     mock.store(on)
     quiet(on)
-    const risky = 'curl -s -H "Authorization: Bearer abcdefghijklmnop1234" https://example.org/api/v1/items/list'
-    on('session.messages', async () => ({ value: shellRows(5, risky) }) as never)
+    const risky = fake('curl -s -H "Authorization: Bear', 'er abcdefghij', 'klmnop1234" example.org/api/v1/items/list')
+    on('tool.call', ok)
     on('fs.write', async (_$: unknown, e: { path: string }) => {
       written.push(e.path)
       return { value: undefined } as never
     })
-    await $.turn.complete(done())
+    await runShell($, 5, risky)
     const r = await $.command.run({ command: 'runbook', args: 'save' } as never)
     expect(r.text).toContain('was not saved')
     expect(written.length).toBe(0)
@@ -790,8 +775,8 @@ describe('v0.6 hooks in the engine', () => {
     const toasts: string[] = []
     mock.store(on)
     quiet(on, toasts)
-    on('session.messages', async () => ({ value: shellRows(6, build) }) as never)
-    await $.turn.complete(done())
+    on('tool.call', ok)
+    await runShell($, 6, build)
     expect(toasts.length).toBe(0)
   })
 
@@ -807,7 +792,6 @@ describe('v0.6 hooks in the engine', () => {
   test('finished turns are recorded and shown, a redo counts against the last one', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
     mock.store(on)
     quiet(on)
-    on('session.messages', async () => ({ value: [{ role: 'user', text: 'x', toolUses: [] }] }) as never)
     await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
     await $.turn.complete(done())
     let report = await $.command.run({ command: 'budget', args: '' } as never)
@@ -825,5 +809,24 @@ describe('v0.6 hooks in the engine', () => {
     expect(why.text).toContain('-> opus·high')
     const report = await $.command.run({ command: 'budget', args: '' } as never)
     expect(report.text).toContain('learner: off')
+  })
+})
+
+describe('wipe', () => {
+  test('/budget wipe deletes what the plugin stored', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
+    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } }, cmdstats: { k: { n: 5, last: 1, tool: 'Bash', sample: 'x' } } })
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    let report = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(report.text).toContain('deep|code: opus·high')
+    const wiped = await $.command.run({ command: 'budget', args: 'wipe' } as never)
+    expect(wiped.text).toContain('deleted')
+    report = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(report.text).not.toContain('deep|code')
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('no routed prompts yet')
   })
 })

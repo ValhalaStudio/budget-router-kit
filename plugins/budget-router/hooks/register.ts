@@ -16,7 +16,7 @@ import {
   vetText,
 } from './policy'
 import type { Finding, LogEntry, PaceSample } from './policy'
-import { applyEscalation, buildIndex, countTurnErrors, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
+import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
 import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
 import type { CmdStats, Learned, Runbook } from './policy'
@@ -225,7 +225,7 @@ function readOptions(options: PluginOptions): Opts {
     learn: bool(options.learn, true),
     learnMinSamples: num(options.learnMinSamples, 8),
     learnExplore: num(options.learnExplore, 0.1),
-    reflect: bool(options.reflect, true),
+    reflect: bool(options.reflect, false),
     reflectPerDay: num(options.reflectPerDay, 8),
   }
 }
@@ -416,14 +416,13 @@ function catalogSuggest(text: string) {
 
 // ---- v0.6: ghost-token guard, runbook memory, learner ----
 const CMDS_KEY = 'cmdstats'
-const SEEN_KEY = 'cmdseen'
 const BOOK_KEY = 'runbooks'
 const BANDIT_KEY = 'bandit'
 const REFLECT_KEY = 'reflect'
 let cmdStats: CmdStats = {}
 let runbooks: Runbook[] = []
 let learnedData: Learned = {}
-let seenToolUse: string[] = []
+let turnErrors = 0 // failed tool calls since the last prompt, counted as they happen
 let v06Loaded = false
 let lastSizeBucket = 0
 let idleAskedAt = 0
@@ -432,6 +431,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 
 const SHELLS = new Set(['Bash', 'PowerShell'])
+const plain = (v: string) => v.replace(/[^A-Za-z0-9 .:_/-]/g, '').slice(0, 60)
 const waiting = () =>
   Object.entries(cmdStats)
     .filter(([, c]) => !c.saved && c.n >= 2)
@@ -441,64 +441,51 @@ async function loadV06($: EngineInterface) {
   cmdStats = ((await $.store.get(CMDS_KEY)) as CmdStats | undefined) ?? {}
   runbooks = ((await $.store.get(BOOK_KEY)) as Runbook[] | undefined) ?? []
   learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
-  seenToolUse = ((await $.store.get(SEEN_KEY)) as string[] | undefined) ?? []
   catalogIndex = undefined
   v06Loaded = true
 }
 
-// After each main turn: count shell commands you ran, then record how the turn went.
-async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }) {
-  if (!v06Loaded) await loadV06($)
-  let rows: Awaited<ReturnType<EngineInterface['session']['messages']>> = []
-  try {
-    rows = await $.session.messages()
-  } catch {
+// Watches tool calls without changing them: counts failed calls since the last prompt (for
+// escalation and the learner) and shell commands that repeat (runbook memory). It reads nothing
+// from the conversation history; it sees each call as it happens, like any hook does.
+async function observeTool($: EngineInterface, e: { tool: string; agentId?: string; command?: unknown }, failed: boolean) {
+  if (e.agentId !== undefined) return
+  if (failed) {
+    turnErrors++
     return
   }
-  if (o.runbooks) {
-    try {
-      let changed = false
-      for (const row of rows) {
-        for (const u of row.toolUses ?? []) {
-          const cmd = (u.input as { command?: unknown }).command
-          if (!SHELLS.has(u.tool) || typeof cmd !== 'string' || seenToolUse.includes(u.tool_use_id)) continue
-          seenToolUse = [...seenToolUse.slice(-299), u.tool_use_id]
-          const hit = noteCommand(cmdStats, u.tool, cmd, Date.now(), o.runbookAfter)
-          if (!hit) continue
-          cmdStats = hit.stats
-          changed = true
-          if (hit.crossed && cmdStats[hit.key]) {
-            cmdStats = { ...cmdStats, [hit.key]: { ...cmdStats[hit.key]!, offered: true } }
-            const snippet = cmd.trim().replace(/\s+/g, ' ').slice(0, 70)
-            $.ui.toast(`You have run this ${cmdStats[hit.key]!.n} times: "${snippet}". /runbook save keeps it as a script I can point you to.`, { timeoutMs: 20_000 })
-            await addLog($, { t: Date.now(), k: 'runbook', name: runbookName(cmd), act: 'offered' })
-          }
-        }
-      }
-      if (changed) {
-        await $.store.set(CMDS_KEY, cmdStats)
-        await $.store.set(SEEN_KEY, seenToolUse)
-      }
-    } catch {
-      // runbook memory is optional
-    }
+  if (!o.runbooks || !SHELLS.has(e.tool) || typeof e.command !== 'string') return
+  if (!v06Loaded) await loadV06($)
+  const hit = noteCommand(cmdStats, e.tool, e.command, Date.now(), o.runbookAfter)
+  if (!hit) return
+  cmdStats = hit.stats
+  const stat = cmdStats[hit.key]
+  if (hit.crossed && stat) {
+    cmdStats = { ...cmdStats, [hit.key]: { ...stat, offered: true } }
+    const snippet = e.command.trim().replace(/\s+/g, ' ').slice(0, 70)
+    $.ui.toast(`You have run this ${stat.n} times: "${snippet}". /runbook save keeps it as a script I can point you to.`, { timeoutMs: 20_000 })
+    await addLog($, { t: Date.now(), k: 'runbook', name: runbookName(e.command), act: 'offered' })
   }
-  if (o.learn && pending) {
-    const done = pending
-    pending = undefined
-    try {
-      const errors = countTurnErrors(rows)
-      let ok = !e.isAborted && errors <= 1
-      if (o.reflect && !e.isAborted && errors >= 1 && errors <= 2) {
-        const verdictOk = await reflectJudge($, done.text, e.answer, errors)
-        if (verdictOk !== undefined) ok = verdictOk
-      }
-      learnedData = recordOutcome(learnedData, done.bucket, done.rung, ok)
-      lastOutcome = { bucket: done.bucket, rung: done.rung, ok, at: Date.now() }
-      await $.store.set(BANDIT_KEY, learnedData)
-    } catch {
-      // learning is optional
+  await $.store.set(CMDS_KEY, cmdStats)
+}
+
+// After each main turn: record how it went for the learner.
+async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }) {
+  if (!v06Loaded) await loadV06($)
+  if (!o.learn || !pending) return
+  const done = pending
+  pending = undefined
+  try {
+    let ok = !e.isAborted && turnErrors <= 1
+    if (o.reflect && !e.isAborted && turnErrors >= 1 && turnErrors <= 2) {
+      const verdictOk = await reflectJudge($, done.text, e.answer, turnErrors)
+      if (verdictOk !== undefined) ok = verdictOk
     }
+    learnedData = recordOutcome(learnedData, done.bucket, done.rung, ok)
+    lastOutcome = { bucket: done.bucket, rung: done.rung, ok, at: Date.now() }
+    await $.store.set(BANDIT_KEY, learnedData)
+  } catch {
+    // learning is optional
   }
 }
 
@@ -614,7 +601,7 @@ async function troubleAdjust($: EngineInterface, e: { turnId: string; index: num
   if (escalation && escalation.turnId !== e.turnId) escalation = undefined
   if (e.index >= 2 && !escalation?.modelUp) {
     try {
-      const errors = countTurnErrors(await $.session.messages())
+      const errors = turnErrors
       const esc = escalationFor(errors, o.escalateAfterErrors, o.escalateModelAfterErrors)
       if (esc.effortUp || esc.modelUp) {
         const before = escalation
@@ -839,7 +826,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'budget',
       description: "Show today's Claude usage budget and route; 'unlock' overrides the lock for 1 hour",
-      argumentHint: '[unlock|reset|soft|hard|skills|vet <path>]',
+      argumentHint: '[unlock|reset|soft|hard|skills|vet <path>|wipe]',
     })
     await $.command.register({
       name: 'route',
@@ -915,6 +902,7 @@ export const register: Register = (on, options) => {
       } catch {
         // keep the last known size
       }
+      turnErrors = 0
       // A redo or correction right after a "successful" turn means it was not.
       if (o.learn && lastOutcome?.ok && now - lastOutcome.at < 15 * 60_000 && REDO_RE.test(e.text)) {
         learnedData = flipOutcome(learnedData, lastOutcome.bucket, lastOutcome.rung)
@@ -961,9 +949,16 @@ export const register: Register = (on, options) => {
           const found = catalogSuggest(e.text)
           if (found) {
             const book = found.item.kind === 'runbook' ? runbooks.find(r => r.name === found.item.name) : undefined
-            const owner = found.item.plugin ? ` from ${found.item.plugin}` : ''
-            extra = [book ? runbookHintText(book) : `[budget-router hint] An installed ${found.item.kind}${owner} may fit this request: ${found.item.name}. Use it only if it really matches.`]
-            await addLog($, book ? { t: now, k: 'runbook', name: book.name, act: 'hint' } : { t: now, k: 'hint', agent: found.item.name })
+            if (book) {
+              // the person's own saved script: a pointer for the model
+              extra = [runbookHintText(book)]
+              await addLog($, { t: now, k: 'runbook', name: book.name, act: 'hint' })
+            } else {
+              // someone else's skill or agent: tell the person, never steer the model toward it
+              const owner = found.item.plugin ? ` from ${plain(found.item.plugin)}` : ''
+              $.ui.toast(`An installed ${found.item.kind}${owner} may fit this request: ${plain(found.item.name)}. Use it if you want it.`, { timeoutMs: 15_000 })
+              await addLog($, { t: now, k: 'hint', agent: found.item.name })
+            }
           }
         }
       }
@@ -1022,6 +1017,17 @@ export const register: Register = (on, options) => {
     return isOffered(e.agent, level, o.hideAgentsAtCritical) ? next(e) : { isOffered: false }
   })
 
+  // Passes every tool call through untouched; see observeTool.
+  on('tool.call', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      await observeTool($, e as { tool: string; agentId?: string; command?: unknown }, r.isError === true && r.deny === undefined)
+    } catch {
+      // observing must never get in the way
+    }
+    return r
+  })
+
   // Records which skill was used, so /route why can say whether a suggestion was followed.
   on('skill.prompt', async ($, e, next) => {
     await addLog($, { t: Date.now(), k: 'skill', name: e.skill })
@@ -1071,6 +1077,24 @@ export const register: Register = (on, options) => {
       if (!l) return { text: 'Nothing is locked.' }
       await $.store.set(STORE_KEY, { ...l, unlockUntil: now + UNLOCK_MS })
       return { text: `Lock overridden until ${clock(now + UNLOCK_MS)}.` }
+    }
+    if (arg === 'wipe') {
+      // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
+      // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
+      // are left where they are.
+      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, SOFT_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, REFLECT_KEY]) await $.store.delete(key)
+      learned = {}
+      soft = false
+      pacerU = 0
+      cmdStats = {}
+      runbooks = []
+      learnedData = {}
+      pending = undefined
+      lastOutcome = undefined
+      catalogIndex = undefined
+      level = 0
+      showStatus($, pressure(undefined, now))
+      return { text: 'Everything budget-router had stored is deleted. Scripts saved with /runbook were left in place (see /runbook list before you forget them).' }
     }
     if (arg === 'reset') {
       await $.store.delete(STORE_KEY)

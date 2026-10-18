@@ -360,27 +360,6 @@ export function shiftLadder(spec: LadderSpec, steps: number): LadderSpec {
 
 // -- Escalation when a turn goes badly --------------------------------------------------
 
-export type TroubleRow = {
-  role: 'user' | 'assistant'
-  text: string
-  toolUses?: ReadonlyArray<{ tool_use_id: string; isError?: boolean }>
-  toolResults?: ReadonlyArray<{ tool_use_id: string; isError?: boolean }>
-}
-
-/** Distinct tool calls that errored since the last real user prompt (a user row with text and no tool results). */
-export function countTurnErrors(rows: readonly TroubleRow[]): number {
-  const failed = new Set<string>()
-  for (let n = rows.length - 1; n >= 0; n--) {
-    const row = rows[n]
-    if (!row) continue
-    const isPrompt = row.role === 'user' && row.text.trim() !== '' && !(row.toolResults && row.toolResults.length > 0)
-    if (isPrompt) break
-    for (const u of row.toolUses ?? []) if (u.isError) failed.add(u.tool_use_id)
-    for (const r of row.toolResults ?? []) if (r.isError) failed.add(r.tool_use_id)
-  }
-  return failed.size
-}
-
 export type Escalation = { effortUp: boolean; modelUp: boolean }
 
 export function escalationFor(errors: number, afterErrors: number, modelAfterErrors: number): Escalation {

@@ -1,8 +1,10 @@
 {
   "name": "budget-router",
-  "version": "0.6.0",
+  "displayName": "Budget Router",
+  "version": "0.7.0",
   "author": {
-    "name": "ValhalaStudio"
+    "name": "ValhalaStudio",
+    "url": "https://github.com/ValhalaStudio"
   },
   "description": "Routes each Claude Code prompt to the right model and effort, and keeps you inside a daily usage budget.",
   "license": "GPL-3.0-or-later",
@@ -17,7 +19,7 @@
   ],
   "documentationUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/README.md",
   "supportUrl": "https://github.com/ValhalaStudio/budget-router-kit/issues",
-  "privacyPolicyUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/README.md#what-it-runs-reads-sends-and-stores",
+  "privacyPolicyUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/PRIVACY.md",
   "userConfig": {
     "classifier": {
       "type": "string",
@@ -169,8 +171,8 @@
     },
     "catalogHints": {
       "type": "boolean",
-      "title": "Suggest installed skills and agents",
-      "description": "When no built-in helper fits, add one hint naming an installed skill or agent whose description clearly matches the prompt (keyword ranking, no model call)",
+      "title": "Tell me when an installed skill or agent fits",
+      "description": "Show a notice naming an installed skill or agent whose description clearly matches the prompt (keyword ranking, no model call). It only tells you; nothing is sent to the model",
       "default": true
     },
     "escalateOnTrouble": {
@@ -236,7 +238,7 @@
     "runbooks": {
       "type": "boolean",
       "title": "Runbook memory",
-      "description": "Notice shell commands you repeat and let you save them as scripts with /runbook; matching prompts get a one-line pointer",
+      "description": "Notice shell commands you repeat and let you save them as scripts with /runbook; matching prompts get a one-line pointer to your own script",
       "default": true
     },
     "runbookAfter": {
@@ -272,8 +274,8 @@
     "reflect": {
       "type": "boolean",
       "title": "Cheap second opinion",
-      "description": "For unclear turns (one or two failed tool calls) ask Haiku whether the request was completed; sends that prompt and the start of the reply",
-      "default": true
+      "description": "Off by default. For unclear turns (one or two failed tool calls) ask Haiku whether the request was completed; this sends the first 300 characters of the prompt and 600 of the reply to Haiku through your own Claude account",
+      "default": false
     },
     "reflectPerDay": {
       "type": "number",
