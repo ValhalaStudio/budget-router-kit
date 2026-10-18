@@ -65,7 +65,7 @@ claude plugin update budget-router@budget-router-kit
 
 ## More in 0.4
 
-- **Unreal rules.** A prompt about UBT, UHT, linker (`LNK`), `error C####`, cook or packaging failures never runs on the trivial or light tier. The model is also told, in one hidden line, to let `log-triage` cut a long log down first. Epic's `execute_tool_script` (arbitrary Python inside the editor) always asks you, even in permissive permission modes (`askBeforeUnrealScripts`).
+- **Unreal rules.** A prompt about UBT, UHT, linker (`LNK`), `error C####`, cook or packaging failures never runs on the trivial or light tier, and the model is told, in one hidden line, to let `log-triage` cut a long log down first. budget-router does not change permission prompts: with Epic's Unreal MCP, keep Claude's tool approvals on.
 - **Helper-agent hints.** A prompt that fits a helper (a size survey, a pre-delete repo check, a diff review, a wide search) gets one hidden line suggesting it. It is decided by keywords, costs no model call, and `/route why` shows how many hints were given and how many were followed.
 - **Cache-aware switching.** The "stay on the same model in a long conversation" rule now lapses once the cache has gone cold (`cacheWarmMinutes`, 55 by default), because switching is then free.
 - **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.

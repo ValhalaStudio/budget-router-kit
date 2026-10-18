@@ -18,7 +18,7 @@ Claude subscriptions only have a 5-hour and a weekly limit. budget-router splits
 - **Cache-aware.** In long conversations a one-step model switch is skipped while the prompt cache is still warm, because switching re-reads the whole conversation.
 - **Subagents.** Read-only helper types (`Explore`, `claude-code-guide`, `statusline-setup`) start on Haiku unless the call names a model. Forks, resumes, teammates and workflow agents are never touched. Agent types can be hidden once usage is tight.
 - **Helper agents** (all read-only): `scout`, `log-triage` (cuts a long build, cook or test log to its errors), `disk-auditor`, `repo-check` (git state before a cleanup or move) and `reviewer`. A prompt that fits one gets a one-line hint, decided by keywords.
-- **Unreal Engine rules.** Prompts about UBT, linker, cook or packaging errors never run on the cheapest tiers, and Epic's `execute_tool_script` (arbitrary Python in the editor) always asks first.
+- **Unreal Engine rules.** Prompts about UBT, linker, cook or packaging errors never run on the cheapest tiers, and get a hint to let `log-triage` cut the log down first. budget-router does not touch permission prompts: if you use Epic's Unreal MCP (its `execute_tool_script` runs arbitrary Python inside the editor), keep Claude's tool approvals on.
 - **Commands.** `/budget` (numbers, pace forecast), `/budget skills` (what your skill and command list costs), `/budget vet <path>` (red-flag scan of a skill or plugin before you install it), `/route` (pin a tier or model, `/route why` shows the recent decisions and token use).
 
 ## Install
@@ -53,7 +53,6 @@ Every setting is a `userConfig` option, shown in `/config`.
 | `session.measure` | Reads the rate-limit numbers Claude Code reports; raises a toast and a system note when a cap starts to apply. |
 | `agent.spawn` | Starts read-only helper types on Haiku when the call names no model. Refuses new subagents only when today's budget is spent (same exceptions as above). Never touches forks, resumes, teammates or workflow agents. |
 | `agent.offer` | Hides the agent types you list in `hideAgentsAtCritical` once usage passes the second threshold. The list is empty by default. |
-| `tool.check` | For Epic's Unreal `execute_tool_script` only: turns an allow into "ask you first". Never loosens a deny, and leaves every other tool alone. |
 | `command.run` | Answers `/budget` and `/route` itself. |
 
 The plugin does not read credentials, tokens or key files. `/budget vet` only looks for such patterns in the text of a skill or plugin you point it at.

@@ -5,7 +5,6 @@ import {
   helperHint,
   isOffered,
   isUnrealBuildPrompt,
-  isUnrealScriptTool,
   parseList,
   parseSubagentModels,
   planSpawn,
@@ -75,7 +74,6 @@ type Opts = {
   logDecisions: boolean
   agentHints: boolean
   unrealRules: boolean
-  askBeforeUnrealScripts: boolean
   cacheWarmMinutes: number
   paceWarnHours: number
 }
@@ -185,7 +183,6 @@ function readOptions(options: PluginOptions): Opts {
     logDecisions: bool(options.logDecisions, true),
     agentHints: bool(options.agentHints, true),
     unrealRules: bool(options.unrealRules, true),
-    askBeforeUnrealScripts: bool(options.askBeforeUnrealScripts, true),
     cacheWarmMinutes: num(options.cacheWarmMinutes, 55),
     paceWarnHours: num(options.paceWarnHours, 3),
   }
@@ -654,20 +651,6 @@ export const register: Register = (on, options) => {
       })
     }
     return r
-  })
-
-  // Epic's Unreal MCP can run arbitrary Python in the editor: always put it to the person.
-  // It only ever tightens: any other tool passes straight through, and a deny from
-  // your settings stays a deny.
-  on('tool.check', async ($, e, next) => {
-    if (!o.askBeforeUnrealScripts || !isUnrealScriptTool(e.tool)) {
-      return next(e)
-    }
-    const verdict = await next(e)
-    if (verdict.decision === 'deny') {
-      return next(e)
-    }
-    return { decision: 'ask', reason: 'budget-router: this tool runs arbitrary Python inside the Unreal editor and can delete assets. Commit your work first, then approve if you want it.' }
   })
 
   on('command.run', { command: 'budget' }, async ($, e) => {

@@ -177,7 +177,7 @@ describe('turn.complete hook', () => {
 
 // --- v0.4 ----------------------------------------------------------------------------------
 
-import { addPace, auditCommands, estimateTokens, helperHint, isUnrealBuildPrompt, isUnrealScriptTool, projectExhaustion, shouldStick, verdict, vetText } from './policy'
+import { addPace, auditCommands, estimateTokens, helperHint, isUnrealBuildPrompt, projectExhaustion, shouldStick, verdict, vetText } from './policy'
 
 describe('unreal build text', () => {
   test('recognises build, link and cook failures, not ordinary talk', async () => {
@@ -187,12 +187,6 @@ describe('unreal build text', () => {
     for (const t of ['hello', 'rename this variable', 'write a README', 'the build looks fine']) expect(isUnrealBuildPrompt(t)).toBe(false)
   })
 
-  test('only the editor-script tool is flagged', async () => {
-    expect(isUnrealScriptTool('mcp__unreal__ProgrammaticToolset.execute_tool_script')).toBe(true)
-    expect(isUnrealScriptTool('mcp__x__execute_tool_script')).toBe(true)
-    expect(isUnrealScriptTool('mcp__unreal__list_actors')).toBe(false)
-    expect(isUnrealScriptTool('Bash')).toBe(false)
-  })
 })
 
 describe('helper agent hints', () => {
@@ -274,31 +268,6 @@ describe('vetting a skill file', () => {
 describe('v0.4 hooks in the engine', () => {
   const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
   const spent = () => ({ day: day(), windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() })
-
-  test('the editor-script tool always asks, other tools keep their verdict', async ($, on) => {
-    mock.store(on)
-    on('tool.check', async () => ({ decision: 'allow' as const }))
-    const script = await $.tool.check({ tool: 'mcp__unreal__ProgrammaticToolset.execute_tool_script', input: {} } as never)
-    expect(script.decision).toBe('ask')
-    expect(script.reason).toContain('Unreal editor')
-    const bash = await $.tool.check({ tool: 'Bash', input: { command: 'ls' } } as never)
-    expect(bash.decision).toBe('allow')
-  })
-
-  test('a deny from your settings stays a deny', async ($, on) => {
-    mock.store(on)
-    on('tool.check', async () => ({ decision: 'deny' as const, reason: 'blocked by a settings rule' }))
-    const script = await $.tool.check({ tool: 'mcp__unreal__ProgrammaticToolset.execute_tool_script', input: {} } as never)
-    expect(script.decision).toBe('deny')
-    expect(script.reason).toBe('blocked by a settings rule')
-  })
-
-  test('with the option off the script tool is left alone', { options: { askBeforeUnrealScripts: false } }, async ($, on) => {
-    mock.store(on)
-    on('tool.check', async () => ({ decision: 'allow' as const }))
-    const script = await $.tool.check({ tool: 'mcp__unreal__ProgrammaticToolset.execute_tool_script', input: {} } as never)
-    expect(script.decision).toBe('allow')
-  })
 
   test('/budget soft keeps subagents starting after the budget is spent; /budget hard refuses again', async ($, on) => {
     mock.store(on, { ledger: spent() })

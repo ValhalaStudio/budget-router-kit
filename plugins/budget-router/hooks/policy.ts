@@ -132,9 +132,6 @@ export const UE_BUILD_RE =
 
 export const isUnrealBuildPrompt = (text: string) => UE_BUILD_RE.test(text)
 
-/** MCP tools that run arbitrary scripts inside the Unreal editor. */
-export const isUnrealScriptTool = (tool: string) => /execute_tool_script|ProgrammaticToolset/i.test(tool)
-
 export type Hint = { agent: string; text: string }
 
 const HINT_RULES: ReadonlyArray<{ agent: string; test: (t: string) => boolean; text: string }> = [

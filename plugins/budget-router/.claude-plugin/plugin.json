@@ -1,6 +1,6 @@
 {
   "name": "budget-router",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "author": {
     "name": "ValhalaStudio"
   },
@@ -150,12 +150,6 @@
       "type": "boolean",
       "title": "Unreal build rules",
       "description": "Prompts about UBT, linker, cook or packaging errors never run on the trivial or light tier",
-      "default": true
-    },
-    "askBeforeUnrealScripts": {
-      "type": "boolean",
-      "title": "Ask before Unreal editor scripts",
-      "description": "Always put Epic's execute_tool_script (arbitrary Python in the editor) to you, even in permissive modes",
       "default": true
     },
     "cacheWarmMinutes": {
