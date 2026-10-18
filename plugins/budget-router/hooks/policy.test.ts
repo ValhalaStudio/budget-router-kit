@@ -938,3 +938,25 @@ describe('fable is never adopted as the opus id', () => {
     expect(seen.every(m => m.includes('opus'))).toBe(true)
   })
 })
+
+describe('wrap-up notice', () => {
+  const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+  test('one heads-up at 90% of the day, not repeated, not before', async ($, on) => {
+    const toasts: string[] = []
+    const reset = new Date(Date.now() + 3 * 86_400_000).toISOString()
+    mock.store(on, { ledger: { day: day(), windowReset: reset, windowStartPct: 10, carry: 0, lastPct: 10, budgetPts: 10, fiveHourPct: 0, alerted: 0, seenAt: Date.now() } })
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async (_$: unknown, e: { text: string }) => {
+      toasts.push(e.text)
+      return { value: undefined } as never
+    })
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+    const measure = (pct: number) => $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits: [{ kind: 'seven_day', percentUsed: pct, resetsAt: reset }], changed: ['rateLimits'] } as never)
+    await measure(15)
+    expect(toasts.some(t => t.includes('Good moment to finish'))).toBe(false)
+    await measure(19.5)
+    expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
+    await measure(19.8)
+    expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
+  })
+})

@@ -50,6 +50,7 @@ type Ledger = {
   fiveHourPct: number
   fiveHourReset?: string
   alerted: number
+  wrapped?: boolean // the wrap-up notice was given today
   unlockUntil?: number
   seenAt: number
 }
@@ -67,6 +68,7 @@ type Opts = {
   classifier: string
   tiers: Record<Tier, Spec>
   warnPercent: number
+  wrapUpPercent: number
   warnCap: Spec
   criticalPercent: number
   criticalCap: Spec
@@ -210,6 +212,7 @@ function readOptions(options: PluginOptions): Opts {
       max: parseSpec(options.tierMax, { family: 'opus', effort: 'xhigh' }),
     },
     warnPercent: num(options.warnPercent, 50),
+    wrapUpPercent: num(options.wrapUpPercent, 90),
     warnCap: parseSpec(options.warnCap, { family: 'sonnet', effort: 'high' }),
     criticalPercent: num(options.criticalPercent, 80),
     criticalCap: parseSpec(options.criticalCap, { family: 'haiku', effort: 'medium' }),
@@ -860,7 +863,8 @@ function showStatus($: EngineInterface, p: Pressure) {
   const head = r ? `${r.family}·${r.effort} (${r.tier}${pin ? ', pinned' : ''})` : 'route: auto'
   const warn = p.level === 3 ? '⛔ ' : p.level > 0 ? '⚠ ' : ''
   const five = p.five > 0 ? ` │ 5h ${Math.round(p.five)}%` : ''
-  $.ui.status(`${warn}${head} │ day ${Math.round(p.daily)}%${five} │ week ${Math.round(p.week)}%`)
+  const saved = smartOn() && (smartData.saved ?? 0) >= 0.05 ? ` │ saved $${(smartData.saved ?? 0).toFixed(2)}` : ''
+  $.ui.status(`${warn}${head} │ day ${Math.round(p.daily)}%${five} │ week ${Math.round(p.week)}%${saved}`)
 }
 
 function alert($: EngineInterface, p: Pressure, now: number) {
@@ -873,6 +877,16 @@ function alert($: EngineInterface, p: Pressure, now: number) {
         ? `⚠⚠ Claude usage: ${why}. Turns are now capped at ${o.criticalCap.family}·${o.criticalCap.effort}.`
         : `⚠ Claude usage: ${why}. Turns are now capped at ${o.warnCap.family}·${o.warnCap.effort}.`
   $.ui.toast(text, { timeoutMs: 20_000 })
+  void $.session
+    .append({ message: { type: 'system', content: [{ type: 'text', text: `budget-router: ${text}` }] } })
+    .catch(() => undefined)
+}
+
+function wrapUp($: EngineInterface, p: Pressure, now: number) {
+  const left = Math.max(0, Math.round(100 - p.daily))
+  const lock = o.lockAtLimit && !soft ? `Prompts are refused at 100% until ${clock(nextMidnight(now))}` : `Turns stay at ${o.criticalCap.family}·${o.criticalCap.effort} from 100%`
+  const text = `⏳ ${Math.round(p.daily)}% of today's Claude budget is used (about ${left}% left). Good moment to finish what is in hand, commit, and note where you stopped. ${lock}.`
+  $.ui.toast(text, { timeoutMs: 25_000 })
   void $.session
     .append({ message: { type: 'system', content: [{ type: 'text', text: `budget-router: ${text}` }] } })
     .catch(() => undefined)
@@ -995,6 +1009,11 @@ export const register: Register = (on, options) => {
       if (p.level > l.alerted) {
         alert($, p, now)
         l.alerted = p.level
+      }
+      // One heads-up before the lock, so there is time to finish the thing in hand.
+      if (o.wrapUpPercent > 0 && !l.wrapped && p.level < 3 && p.daily >= o.wrapUpPercent) {
+        l.wrapped = true
+        wrapUp($, p, now)
       }
       if (l !== prev) await $.store.set(STORE_KEY, l)
       level = p.level

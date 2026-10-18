@@ -50,6 +50,7 @@ claude plugin update budget-router@budget-router-kit
 - `/budget unlock`: lifts the lock for 1 hour
 - `/budget reset`: re-measures today's budget from the next reply
 - `/budget learn`: what the cost-aware learner has seen and saved; `reset` clears it
+- Wrap-up notice: one heads-up when today's budget passes 90% (`wrapUpPercent`, 0 turns it off), before the lock. The status line also shows what the learner has saved once it is over $0.05.
 - `/route deep`, `/route opus xhigh`, `/route sonnet`, `/route auto`: pin a tier or model for this session (caps still apply)
 - `/route why`: the latest routing decisions, the subagent rules that fired, and today's token use with the share of input served from the prompt cache
 - `/config`: thresholds, caps, tier mapping and model ids

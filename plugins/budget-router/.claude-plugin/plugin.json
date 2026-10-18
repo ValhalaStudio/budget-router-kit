@@ -1,7 +1,7 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
@@ -60,6 +60,12 @@
       "title": "Max tier",
       "description": "model:effort when the prompt says think hard / ultrathink",
       "default": "opus:xhigh"
+    },
+    "wrapUpPercent": {
+      "type": "number",
+      "title": "Wrap-up notice at",
+      "description": "Percent of today's budget at which one heads-up is given before the lock (0 switches it off)",
+      "default": 90
     },
     "warnPercent": {
       "type": "number",
