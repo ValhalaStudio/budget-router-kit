@@ -300,3 +300,274 @@ describe('v0.4 hooks in the engine', () => {
     expect((r.context ?? []).length).toBe(0)
   })
 })
+
+// --- v0.5 ----------------------------------------------------------------------------------
+
+import { PACER_DEFAULTS, applyEscalation, buildIndex, countTurnErrors, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent, tokenize } from './policy'
+import type { CatalogItem, TroubleRow } from './policy'
+
+describe('pace target and PID pacer', () => {
+  test('the even-pace line runs from the start hour to the end hour', async () => {
+    expect(targetPercent(8, 8, 24)).toBe(0)
+    expect(targetPercent(16, 8, 24)).toBe(50)
+    expect(targetPercent(24, 8, 24)).toBe(100)
+    expect(targetPercent(3, 8, 24)).toBe(0)
+    expect(targetPercent(5, 8, 8)).toBe(100)
+  })
+
+  test('on pace or under it, nothing is shed', async () => {
+    let s = pacerStep(undefined, 'd1', 0, -10)
+    s = pacerStep(s, 'd1', 3_600_000, 0)
+    expect(s.u).toBe(0)
+    expect(paceSteps(s.u)).toBe(0)
+  })
+
+  test('sustained overspending ramps up to two steps, and the integral stops growing there', async () => {
+    const h = 3_600_000
+    let s = pacerStep(undefined, 'd1', 0, 20) // proportional only: 0.05 * 20 = 1.0
+    expect(Math.round(s.u * 1000) / 1000).toBe(1)
+    s = pacerStep(s, 'd1', h, 20) // an hour later the integral adds 0.02 * 20
+    expect(Math.round(s.u * 1000) / 1000).toBe(1.4)
+    s = pacerStep(s, 'd1', 2 * h, 40)
+    expect(s.u).toBe(PACER_DEFAULTS.maxSteps)
+    const frozen = s.i
+    s = pacerStep(s, 'd1', 3 * h, 40) // saturated and still over: no wind-up
+    expect(s.i).toBe(frozen)
+  })
+
+  test('it relaxes when use falls back under the line, and restarts each day', async () => {
+    const h = 3_600_000
+    let s = pacerStep(undefined, 'd1', 0, 40)
+    s = pacerStep(s, 'd1', h, 40)
+    expect(s.u).toBe(2)
+    s = pacerStep(s, 'd1', 2 * h, -60)
+    expect(s.u).toBe(0)
+    const next = pacerStep(s, 'd2', 3 * h, 0)
+    expect(next.i).toBe(0)
+    expect(next.day).toBe('d2')
+  })
+
+  test('rounding to whole steps', async () => {
+    expect([0.4, 0.5, 1.4, 1.5, 2].map(paceSteps)).toEqual([0, 1, 1, 2, 2])
+  })
+})
+
+describe('cost ladder', () => {
+  test('moves cheaper and dearer and stays on the ladder', async () => {
+    expect(shiftLadder({ family: 'sonnet', effort: 'high' }, 1)).toEqual({ family: 'sonnet', effort: 'low' })
+    expect(shiftLadder({ family: 'sonnet', effort: 'high' }, 2)).toEqual({ family: 'haiku', effort: 'medium' })
+    expect(shiftLadder({ family: 'opus', effort: 'xhigh' }, 1)).toEqual({ family: 'opus', effort: 'high' })
+    expect(shiftLadder({ family: 'haiku', effort: 'low' }, 3)).toEqual({ family: 'haiku', effort: 'low' })
+    expect(shiftLadder({ family: 'sonnet', effort: 'low' }, -2)).toEqual({ family: 'opus', effort: 'high' })
+    expect(shiftLadder({ family: 'opus', effort: 'xhigh' }, -3)).toEqual({ family: 'opus', effort: 'xhigh' })
+  })
+
+  test('off-ladder specs map to the dearest rung that is not dearer', async () => {
+    expect(ladderIndex({ family: 'sonnet', effort: 'medium' })).toBe(ladderIndex({ family: 'sonnet', effort: 'low' }))
+    expect(shiftLadder({ family: 'sonnet', effort: 'medium' }, 1)).toEqual({ family: 'haiku', effort: 'medium' })
+    expect(ladderIndex({ family: 'opus', effort: 'max' })).toBe(ladderIndex({ family: 'opus', effort: 'xhigh' }))
+  })
+})
+
+describe('escalation when a turn goes badly', () => {
+  const row = (role: 'user' | 'assistant', text: string, uses: Array<[string, boolean]> = [], results: Array<[string, boolean]> = []): TroubleRow => ({
+    role,
+    text,
+    toolUses: uses.map(([tool_use_id, isError]) => ({ tool_use_id, isError })),
+    toolResults: results.length > 0 ? results.map(([tool_use_id, isError]) => ({ tool_use_id, isError })) : undefined,
+  } as TroubleRow)
+
+  test('counts distinct failed calls since the last real prompt, once each', async () => {
+    const rows = [
+      row('user', 'old request'),
+      row('assistant', '', [['old1', true], ['old2', true]]),
+      row('user', 'fix the build'),
+      row('assistant', '', [['a', true], ['b', false]]),
+      row('user', '', [], [['a', true], ['b', false]]),
+      row('assistant', '', [['c', true]]),
+    ]
+    expect(countTurnErrors(rows)).toBe(2)
+    expect(countTurnErrors([])).toBe(0)
+  })
+
+  test('effort rises first, the model only after a longer run, and effort stops at high', async () => {
+    expect(escalationFor(2, 3, 6)).toEqual({ effortUp: false, modelUp: false })
+    expect(escalationFor(3, 3, 6)).toEqual({ effortUp: true, modelUp: false })
+    expect(escalationFor(6, 3, 6)).toEqual({ effortUp: true, modelUp: true })
+    expect(applyEscalation({ family: 'sonnet', effort: 'low' }, { effortUp: true, modelUp: false })).toEqual({ family: 'sonnet', effort: 'medium' })
+    expect(applyEscalation({ family: 'sonnet', effort: 'high' }, { effortUp: true, modelUp: false })).toEqual({ family: 'sonnet', effort: 'high' })
+    expect(applyEscalation({ family: 'haiku', effort: 'low' }, { effortUp: true, modelUp: true })).toEqual({ family: 'sonnet', effort: 'medium' })
+    expect(applyEscalation({ family: 'opus', effort: 'high' }, { effortUp: true, modelUp: true })).toEqual({ family: 'opus', effort: 'high' })
+  })
+})
+
+describe('suggesting installed skills and agents', () => {
+  const items: CatalogItem[] = [
+    { kind: 'skill', name: 'pdf', description: 'Use this skill whenever the user wants to do anything with PDF files: reading, merging, splitting, rotating, watermarks, forms, OCR on scanned documents', source: 'plugin', plugin: 'anthropic-skills' },
+    { kind: 'skill', name: 'docx', description: 'Create, read and edit Word documents (.docx): tracked changes, comments, templates, headings and tables of contents', source: 'plugin', plugin: 'anthropic-skills' },
+    { kind: 'skill', name: 'xlsx', description: 'Spreadsheet work: open, edit and fix workbooks, formulas, formatting, charts, csv and tsv cleaning', source: 'plugin', plugin: 'anthropic-skills' },
+    { kind: 'skill', name: 'loop', description: 'Run a prompt or slash command on a recurring interval', source: 'plugin' },
+    { kind: 'agent', name: 'security-auditor', description: 'Reviews code for vulnerabilities, injection, leaked secrets and authentication problems', source: 'plugin' },
+    { kind: 'skill', name: 'frontend-design', description: 'Build distinctive production interfaces: components, pages, layouts and styling in CSS', source: 'plugin' },
+  ]
+  const idx = buildIndex(items)
+
+  test('stems plurals and drops filler words', async () => {
+    expect(tokenize('Please MERGE these PDF files and rotate pages')).toEqual(['merge', 'pdf', 'rotate', 'page'])
+  })
+
+  test('picks the one item that clearly fits', async () => {
+    expect(suggestFrom('I need merging and splitting for a pdf, and rotating pages', idx)?.item.name).toBe('pdf')
+    expect(suggestFrom('add a formula column to the spreadsheet and chart the workbook', idx)?.item.name).toBe('xlsx')
+    expect(suggestFrom('review this code for injection vulnerabilities and leaked secrets', idx)?.item.name).toBe('security-auditor')
+  })
+
+  test('says nothing for ordinary prompts or a single weak match', async () => {
+    expect(suggestFrom('rename the variable and fix the typo', idx)).toBeUndefined()
+    expect(suggestFrom('check the pdf', idx)).toBeUndefined()
+    expect(suggestFrom('', idx)).toBeUndefined()
+    expect(suggestFrom('merging and splitting a pdf', buildIndex([]))).toBeUndefined()
+  })
+
+  test('says nothing when two items fit about equally', async () => {
+    const twin = buildIndex([
+      { kind: 'skill', name: 'pdf-a', description: 'Merging splitting rotating pdf documents', source: 'plugin' },
+      { kind: 'skill', name: 'pdf-b', description: 'Merging splitting rotating pdf documents', source: 'plugin' },
+    ])
+    expect(suggestFrom('merging and splitting pdf documents', twin)).toBeUndefined()
+  })
+})
+
+describe('log summary, v0.5 rows', () => {
+  test('shows escalations and counts a skill use as following a hint', async () => {
+    const log: LogEntry[] = [
+      { t: 1000, k: 'hint', agent: 'pdf' },
+      { t: 1500, k: 'skill', name: 'anthropic-skills:pdf' },
+      { t: 2000, k: 'hint', agent: 'xlsx' },
+      { t: 3000, k: 'escalate', from: 'sonnet·low', to: 'sonnet·medium', errors: 3 },
+    ]
+    const text = summarize(log, 0, n => `T${n}`)
+    expect(text).toContain('pdf: 1 given, 1 followed')
+    expect(text).toContain('xlsx: 1 given, 0 followed')
+    expect(text).toContain('T3000 sonnet·low -> sonnet·medium after 3 failed tool calls')
+  })
+})
+
+describe('v0.5 hooks in the engine', () => {
+  const rateLimits = [
+    { kind: 'seven_day', percentUsed: 30, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
+    { kind: 'five_hour', percentUsed: 5, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+  ]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const quiet = (on: any) => {
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+  }
+
+  test('spending ahead of the even-pace line lowers the next route by up to two steps', { options: { classifier: 'heuristic', paceSlack: -200 } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('-> sonnet·low')
+    expect(why.text).toContain('pace -2')
+    const budget = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(budget.text).toContain('pace control: shedding 2 cost step(s)')
+  })
+
+  test('with pace control off the route is untouched', { options: { classifier: 'heuristic', paceSlack: -200, paceControl: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('-> opus·high')
+    expect(why.text).not.toContain('pace -')
+  })
+
+  test('an installed agent that clearly fits is suggested once, and logged', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('agent.offer', async () => ({ isOffered: true }))
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
+    await $.agent.offer({ agent: 'Explore', description: 'Fast read-only search agent', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } } as never)
+    const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
+    expect((r.context ?? []).join('\n')).toContain('pdf-wizard')
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('pdf-wizard: 1 given')
+  })
+
+  test('catalog suggestions can be switched off', { options: { classifier: 'heuristic', catalogHints: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('agent.offer', async () => ({ isOffered: true }))
+    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
+    const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
+    expect((r.context ?? []).length).toBe(0)
+  })
+})
+
+describe('escalation inside turn.step', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const quiet = (on: any) => {
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+  }
+  const failures = (n: number) => [
+    { role: 'user', text: 'fix the build', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: Array.from({ length: n }, (_, k) => ({ tool_use_id: `t${k}`, tool: 'Bash', input: {}, isError: true })) },
+  ]
+
+  async function step($: any, on: any, rows: unknown[], index = 3) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    on('session.messages', async () => ({ value: rows }) as never)
+    const seen: Array<{ model: string; effort: unknown }> = []
+    on('turn.step', async function* (_$: unknown, e: { model: string; effort?: unknown; turnId: string; index: number }) {
+      seen.push({ model: e.model, effort: e.effort })
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+    })
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as never) // trivial: haiku · low
+    const stream = $.turn.step({ turnId: 'turn-1', index, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 8 } as never)
+    for await (const _chunk of stream) { /* drain */ }
+    return seen[0]
+  }
+
+  test('three failed tool calls raise effort one notch, the model stays', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, failures(3))
+    expect(seen?.effort).toBe('medium')
+    expect(String(seen?.model)).toContain('haiku')
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('haiku·low -> haiku·medium after 3 failed tool calls')
+  })
+
+  test('six failed tool calls also raise the model one step', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, failures(6))
+    expect(seen?.effort).toBe('medium')
+    expect(String(seen?.model)).toContain('sonnet')
+  })
+
+  test('two failures change nothing, and escalation can be switched off', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, failures(2))
+    expect(seen?.effort).toBe('low')
+  })
+
+  test('off means off', { options: { classifier: 'heuristic', escalateOnTrouble: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, failures(9))
+    expect(seen?.effort).toBe('low')
+    expect(String(seen?.model)).toContain('haiku')
+  })
+})

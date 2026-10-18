@@ -1,6 +1,6 @@
 {
   "name": "budget-router",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "author": {
     "name": "ValhalaStudio"
   },
@@ -166,6 +166,54 @@
       "title": "Pace warning horizon (hours)",
       "description": "Warn once a day when the last 90 minutes' pace would use up today's budget within this many hours",
       "default": 3
+    },
+    "catalogHints": {
+      "type": "boolean",
+      "title": "Suggest installed skills and agents",
+      "description": "When no built-in helper fits, add one hint naming an installed skill or agent whose description clearly matches the prompt (keyword ranking, no model call)",
+      "default": true
+    },
+    "escalateOnTrouble": {
+      "type": "boolean",
+      "title": "Escalate when a turn goes badly",
+      "description": "Raise effort, and after a longer run of failed tool calls the model, for the rest of that turn",
+      "default": true
+    },
+    "escalateAfterErrors": {
+      "type": "number",
+      "title": "Raise effort after (failed tool calls)",
+      "description": "Failed tool calls in one turn before effort goes up one notch",
+      "default": 3
+    },
+    "escalateModelAfterErrors": {
+      "type": "number",
+      "title": "Raise the model after (failed tool calls)",
+      "description": "Failed tool calls in one turn before the model goes up one step (once per turn)",
+      "default": 6
+    },
+    "paceControl": {
+      "type": "boolean",
+      "title": "Pace control",
+      "description": "A PI controller sheds one or two cost steps while you spend faster than an even day",
+      "default": true
+    },
+    "dayStartHour": {
+      "type": "number",
+      "title": "Active day starts (hour)",
+      "description": "Local hour the even-pace line starts at",
+      "default": 8
+    },
+    "dayEndHour": {
+      "type": "number",
+      "title": "Active day ends (hour)",
+      "description": "Local hour the even-pace line reaches 100% of the daily budget",
+      "default": 24
+    },
+    "paceSlack": {
+      "type": "number",
+      "title": "Pace slack (percentage points)",
+      "description": "How far ahead of the even-pace line you may be before the controller reacts",
+      "default": 15
     }
   }
 }

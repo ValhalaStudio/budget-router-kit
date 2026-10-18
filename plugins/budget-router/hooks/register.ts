@@ -16,6 +16,8 @@ import {
   vetText,
 } from './policy'
 import type { Finding, LogEntry, PaceSample } from './policy'
+import { applyEscalation, buildIndex, countTurnErrors, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
+import type { CatalogIndex, CatalogItem, PacerState } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
 // what the prompt asks for, and tightens that choice as today's share of the
@@ -76,6 +78,14 @@ type Opts = {
   unrealRules: boolean
   cacheWarmMinutes: number
   paceWarnHours: number
+  catalogHints: boolean
+  escalateOnTrouble: boolean
+  escalateAfterErrors: number
+  escalateModelAfterErrors: number
+  paceControl: boolean
+  dayStartHour: number
+  dayEndHour: number
+  paceSlack: number
 }
 
 const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
@@ -185,6 +195,14 @@ function readOptions(options: PluginOptions): Opts {
     unrealRules: bool(options.unrealRules, true),
     cacheWarmMinutes: num(options.cacheWarmMinutes, 55),
     paceWarnHours: num(options.paceWarnHours, 3),
+    catalogHints: bool(options.catalogHints, true),
+    escalateOnTrouble: bool(options.escalateOnTrouble, true),
+    escalateAfterErrors: num(options.escalateAfterErrors, 3),
+    escalateModelAfterErrors: num(options.escalateModelAfterErrors, 6),
+    paceControl: bool(options.paceControl, true),
+    dayStartHour: num(options.dayStartHour, 8),
+    dayEndHour: num(options.dayEndHour, 24),
+    paceSlack: num(options.paceSlack, 15),
   }
 }
 
@@ -323,6 +341,81 @@ async function paceWatch($: EngineInterface, p: Pressure, now: number) {
   }
 }
 
+// ---- v0.5: pacer, escalation, and suggestions from the installed skills and agents ----
+const PACER_KEY = 'pacer'
+let pacerU = 0 // controller output: how many cost steps to shed (0 to 2)
+let escalation: { turnId: string; effortUp: boolean; modelUp: boolean } | undefined
+const catalog = new Map<string, CatalogItem>()
+let catalogIndex: CatalogIndex | undefined
+
+async function pacerUpdate($: EngineInterface, p: Pressure, now: number) {
+  if (!o.paceControl) {
+    pacerU = 0
+    return
+  }
+  try {
+    const local = new Date(now + tzMin * 60_000)
+    const hour = local.getUTCHours() + local.getUTCMinutes() / 60
+    const target = targetPercent(hour, o.dayStartHour, o.dayEndHour)
+    const prev = (await $.store.get(PACER_KEY)) as PacerState | undefined
+    const next = pacerStep(prev, localDay(now), now, p.daily - (target + o.paceSlack))
+    await $.store.set(PACER_KEY, next)
+    pacerU = next.u
+  } catch {
+    // the pacer is an optimisation; never block work for it
+  }
+}
+
+function noteCatalog(item: CatalogItem) {
+  if (item.plugin === 'budget-router' || item.name.startsWith('budget-router')) return
+  catalog.set(`${item.kind}:${item.name}`, item)
+  catalogIndex = undefined
+}
+
+async function refreshCatalog($: EngineInterface) {
+  try {
+    for (const c of await $.command.list()) {
+      if (c.source === 'builtin') continue
+      noteCatalog({ kind: 'skill', name: c.name, description: c.description, source: c.source, ...(c.plugin ? { plugin: c.plugin } : {}) })
+    }
+  } catch {
+    // suggestions are optional
+  }
+}
+
+function catalogSuggest(text: string) {
+  if (catalog.size === 0) return undefined
+  catalogIndex ??= buildIndex([...catalog.values()])
+  return suggestFrom(text, catalogIndex)
+}
+
+// A turn with several failed tool calls gets more effort, and after a long run a stronger model.
+// Effort changes keep the prompt cache on the 5.5 models; a model step happens at most once a turn.
+async function troubleAdjust($: EngineInterface, e: { turnId: string; index: number }, base: Spec): Promise<Spec> {
+  if (!o.escalateOnTrouble || pin) return base
+  if (escalation && escalation.turnId !== e.turnId) escalation = undefined
+  if (e.index >= 2 && !escalation?.modelUp) {
+    try {
+      const errors = countTurnErrors(await $.session.messages())
+      const esc = escalationFor(errors, o.escalateAfterErrors, o.escalateModelAfterErrors)
+      if (esc.effortUp || esc.modelUp) {
+        const before = escalation
+        const merged = { turnId: e.turnId, effortUp: esc.effortUp || before?.effortUp === true, modelUp: esc.modelUp || before?.modelUp === true }
+        if (!before || before.effortUp !== merged.effortUp || before.modelUp !== merged.modelUp) {
+          escalation = merged
+          const to = applyEscalation(base, merged)
+          await addLog($, { t: Date.now(), k: 'escalate', from: `${base.family}·${base.effort}`, to: `${to.family}·${to.effort}`, errors })
+        }
+      }
+    } catch {
+      // keep the route as chosen
+    }
+  }
+  if (!escalation) return base
+  const raised = applyEscalation(base, escalation)
+  return level >= 2 ? capSpec(raised, o.criticalCap) : level === 1 ? capSpec(raised, o.warnCap) : raised
+}
+
 const VET_EXT = /\.(md|json|ts|tsx|js|mjs|cjs|ps1|sh|py|yaml|yml|toml)$/i
 
 // /budget vet <path>: static red-flag scan of a skill, agent, command or plugin folder before installing it.
@@ -414,6 +507,16 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
       notes.push('cache cold, switched freely')
     }
   }
+  // Pace control: spending ahead of an even day sheds one or two cost steps before any cap
+  // applies. An explicit "think hard" (max) and a /route pin are left alone.
+  const shed = o.paceControl && !pin && tier !== 'max' ? paceSteps(pacerU) : 0
+  if (shed > 0) {
+    const lowered = shiftLadder(spec, shed)
+    if (lowered.family !== spec.family || lowered.effort !== spec.effort) {
+      spec = lowered
+      notes.push(`pace -${shed}`)
+    }
+  }
   if (p.level === 1) spec = capSpec(spec, o.warnCap)
   if (p.level >= 2) spec = capSpec(spec, o.criticalCap)
   if (p.level >= 1) notes.push(`cap ${LEVEL_NAMES[p.level]}`)
@@ -468,6 +571,7 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
     `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills and /budget vet <path> check the skill list`,
   )
   if (paceNote !== '') lines.push(`  ${paceNote}`)
+  lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
   return lines.join('\n')
 }
 
@@ -507,6 +611,9 @@ export const register: Register = (on, options) => {
     })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
     soft = (await $.store.get(SOFT_KEY)) === true
+    const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
+    pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
+    await refreshCatalog($)
     const p = pressure(await loadLedger($), Date.now())
     level = p.level
     showStatus($, p)
@@ -535,6 +642,7 @@ export const register: Register = (on, options) => {
       level = p.level
       showStatus($, p)
       await paceWatch($, p, now)
+      await pacerUpdate($, p, now)
     }
     return next(e)
   })
@@ -574,12 +682,20 @@ export const register: Register = (on, options) => {
         level: p.level,
         ctx: ctxTokens,
       })
-      // One cheap-helper suggestion, decided by keywords (no model call).
+      // One suggestion at most, decided by keywords (no model call): this plugin's own helper
+      // agents first, then any installed skill or agent whose description clearly fits.
       if (o.agentHints && route.tier !== 'trivial') {
         const hint = helperHint(e.text)
         if (hint) {
           extra = [hint.text]
           await addLog($, { t: now, k: 'hint', agent: hint.agent })
+        } else if (o.catalogHints) {
+          const found = catalogSuggest(e.text)
+          if (found) {
+            const owner = found.item.plugin ? ` from ${found.item.plugin}` : ''
+            extra = [`[budget-router hint] An installed ${found.item.kind}${owner} may fit this request: ${found.item.name}. Use it only if it really matches.`]
+            await addLog($, { t: now, k: 'hint', agent: found.item.name })
+          }
         }
       }
     }
@@ -606,7 +722,8 @@ export const register: Register = (on, options) => {
       })
     }
     await learn($, e.model)
-    const spec = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
+    const base = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
+    const spec = await troubleAdjust($, e, base)
     return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
   })
 
@@ -631,7 +748,16 @@ export const register: Register = (on, options) => {
 
   // Past the second cap the model is not offered the types listed in the
   // hideAgentsAtCritical option (none by default).
-  on('agent.offer', ($, e, next) => (isOffered(e.agent, level, o.hideAgentsAtCritical) ? next(e) : { isOffered: false }))
+  on('agent.offer', ($, e, next) => {
+    if (e.source !== 'built-in') noteCatalog({ kind: 'agent', name: e.agent, description: e.description, source: e.source })
+    return isOffered(e.agent, level, o.hideAgentsAtCritical) ? next(e) : { isOffered: false }
+  })
+
+  // Records which skill was used, so /route why can say whether a suggestion was followed.
+  on('skill.prompt', async ($, e, next) => {
+    await addLog($, { t: Date.now(), k: 'skill', name: e.skill })
+    return next(e)
+  })
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)

@@ -64,6 +64,8 @@ export type LogEntry =
   | { t: number; k: 'prompt'; tier: string; why: string; model: string; effort: string; level: number; ctx: number }
   | { t: number; k: 'spawn'; type: string; note: string; level: number }
   | { t: number; k: 'hint'; agent: string }
+  | { t: number; k: 'escalate'; from: string; to: string; errors: number }
+  | { t: number; k: 'skill'; name: string }
   | { t: number; k: 'turn'; sub: boolean; model: string; inp: number; out: number; cr: number; cc: number; ms: number }
 
 export const MAX_LOG = 200
@@ -89,17 +91,25 @@ export function summarize(log: readonly LogEntry[], since: number, hhmm: (ms: nu
     lines.push('  subagents:')
     for (const s of spawns.slice(-5)) lines.push(`    ${hhmm(s.t)} ${s.type}: ${s.note}`)
   }
+  const skillUses = log.filter((x): x is Extract<LogEntry, { k: 'skill' }> => x.k === 'skill')
   const hints = log.filter((x): x is Extract<LogEntry, { k: 'hint' }> => x.k === 'hint')
   if (hints.length > 0) {
     const per = new Map<string, { issued: number; followed: number }>()
     for (const h of hints) {
       const row = per.get(h.agent) ?? { issued: 0, followed: 0 }
       row.issued++
-      if (spawns.some(sp => sp.t >= h.t && sp.t <= h.t + 15 * 60_000 && sp.type.toLowerCase().endsWith(h.agent.toLowerCase()))) row.followed++
+      const name = h.agent.toLowerCase()
+      const inWindow = (t: number) => t >= h.t && t <= h.t + 15 * 60_000
+      if (spawns.some(sp => inWindow(sp.t) && sp.type.toLowerCase().endsWith(name)) || skillUses.some(sk => inWindow(sk.t) && sk.name.toLowerCase().endsWith(name))) row.followed++
       per.set(h.agent, row)
     }
-    lines.push('  agent hints (followed = that agent started within 15 min):')
+    lines.push('  hints (followed = that agent or skill was used within 15 min):')
     for (const [agent, r] of per) lines.push(`    ${agent}: ${r.issued} given, ${r.followed} followed`)
+  }
+  const escalations = log.filter((x): x is Extract<LogEntry, { k: 'escalate' }> => x.k === 'escalate')
+  if (escalations.length > 0) {
+    lines.push('  escalations (a turn with several failed tool calls got more effort or a stronger model):')
+    for (const x of escalations.slice(-5)) lines.push(`    ${hhmm(x.t)} ${x.from} -> ${x.to} after ${x.errors} failed tool calls`)
   }
   const today = log.filter((x): x is Extract<LogEntry, { k: 'turn' }> => x.k === 'turn' && x.t >= since)
   if (today.length > 0) {
@@ -261,4 +271,188 @@ export function verdict(findings: readonly Finding[]): string {
   if (findings.some(f => f.sev === 'high')) return 'DO NOT INSTALL until a person has read it'
   if (findings.some(f => f.sev === 'medium')) return 'REVIEW the flagged parts before installing'
   return 'no red flags found (this is not a guarantee)'
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.5: a PID pacer for the daily budget, escalation when a turn goes badly, and
+// suggestions of installed skills and agents ranked by BM25 keyword matching.
+
+export type EffortName = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type LadderSpec = { family: Family; effort: EffortName }
+
+const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
+
+// -- Pacer ------------------------------------------------------------------------------
+
+export type PacerParams = { kp: number; ki: number; kd: number; iMax: number; maxSteps: number }
+/** kp: steps per percentage point over pace. ki: steps per point-hour. Derivative is off by default. */
+export const PACER_DEFAULTS: PacerParams = { kp: 0.05, ki: 0.02, kd: 0, iMax: 50, maxSteps: 2 }
+
+export type PacerState = { i: number; lastE?: number; lastT?: number; u: number; day: string }
+
+/** Where today's use should be at this hour if spread evenly across the active hours (percent of the daily budget). */
+export function targetPercent(hourOfDay: number, startHour: number, endHour: number): number {
+  if (endHour <= startHour) return 100
+  return 100 * clamp((hourOfDay - startHour) / (endHour - startHour), 0, 1)
+}
+
+/**
+ * One controller step. `errorPts` is use minus allowed pace, in percentage points of the daily
+ * budget. The output `u` is "how many cost steps to shed", 0 to maxSteps. The integral stops
+ * growing while the output is saturated and still over pace (anti-windup), and restarts each day.
+ */
+export function pacerStep(prev: PacerState | undefined, day: string, now: number, errorPts: number, params: PacerParams = PACER_DEFAULTS): PacerState {
+  const base: PacerState = prev && prev.day === day ? prev : { i: 0, u: 0, day }
+  const dtH = base.lastT === undefined ? 0 : clamp((now - base.lastT) / 3_600_000, 0, 1)
+  const saturated = base.u >= params.maxSteps && errorPts > 0
+  const i = saturated ? base.i : clamp(base.i + errorPts * dtH, -params.iMax, params.iMax)
+  const d = base.lastE !== undefined && dtH > 0 ? (errorPts - base.lastE) / dtH : 0
+  const u = clamp(params.kp * errorPts + params.ki * i + params.kd * d, 0, params.maxSteps)
+  return { i, lastE: errorPts, lastT: now, u, day }
+}
+
+/** The controller output rounded to whole steps: 0, 1 or 2. */
+export const paceSteps = (u: number): number => (u < 0.5 ? 0 : u < 1.5 ? 1 : 2)
+
+// -- Cost ladder ------------------------------------------------------------------------
+
+const LADDER: ReadonlyArray<LadderSpec> = [
+  { family: 'haiku', effort: 'low' },
+  { family: 'haiku', effort: 'medium' },
+  { family: 'sonnet', effort: 'low' },
+  { family: 'sonnet', effort: 'high' },
+  { family: 'opus', effort: 'high' },
+  { family: 'opus', effort: 'xhigh' },
+]
+const EFFORT_RANK: Record<EffortName, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+const FAMILY_RANK: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2 }
+const costKey = (s: LadderSpec) => FAMILY_RANK[s.family] * 10 + EFFORT_RANK[s.effort]
+
+/** Index of the dearest ladder rung that is not dearer than the spec. */
+export function ladderIndex(spec: LadderSpec): number {
+  let idx = 0
+  LADDER.forEach((rung, n) => {
+    if (costKey(rung) <= costKey(spec)) idx = n
+  })
+  return idx
+}
+
+/** Move along the cost ladder: positive steps go cheaper, negative steps dearer. Stays on the ladder. */
+export function shiftLadder(spec: LadderSpec, steps: number): LadderSpec {
+  const target = clamp(ladderIndex(spec) - steps, 0, LADDER.length - 1)
+  return LADDER[target] ?? spec
+}
+
+// -- Escalation when a turn goes badly --------------------------------------------------
+
+export type TroubleRow = {
+  role: 'user' | 'assistant'
+  text: string
+  toolUses?: ReadonlyArray<{ tool_use_id: string; isError?: boolean }>
+  toolResults?: ReadonlyArray<{ tool_use_id: string; isError?: boolean }>
+}
+
+/** Distinct tool calls that errored since the last real user prompt (a user row with text and no tool results). */
+export function countTurnErrors(rows: readonly TroubleRow[]): number {
+  const failed = new Set<string>()
+  for (let n = rows.length - 1; n >= 0; n--) {
+    const row = rows[n]
+    if (!row) continue
+    const isPrompt = row.role === 'user' && row.text.trim() !== '' && !(row.toolResults && row.toolResults.length > 0)
+    if (isPrompt) break
+    for (const u of row.toolUses ?? []) if (u.isError) failed.add(u.tool_use_id)
+    for (const r of row.toolResults ?? []) if (r.isError) failed.add(r.tool_use_id)
+  }
+  return failed.size
+}
+
+export type Escalation = { effortUp: boolean; modelUp: boolean }
+
+export function escalationFor(errors: number, afterErrors: number, modelAfterErrors: number): Escalation {
+  return { effortUp: errors >= afterErrors, modelUp: errors >= modelAfterErrors }
+}
+
+const NEXT_EFFORT: Record<EffortName, EffortName> = { low: 'medium', medium: 'high', high: 'high', xhigh: 'xhigh', max: 'max' }
+const NEXT_FAMILY: Record<Family, Family> = { haiku: 'sonnet', sonnet: 'opus', opus: 'opus' }
+
+/** Effort goes up one notch (to high at most); the model goes up one step only for a long run of errors. */
+export function applyEscalation(spec: LadderSpec, esc: Escalation): LadderSpec {
+  return {
+    family: esc.modelUp ? NEXT_FAMILY[spec.family] : spec.family,
+    effort: esc.effortUp || esc.modelUp ? NEXT_EFFORT[spec.effort] : spec.effort,
+  }
+}
+
+// -- Suggesting installed skills and agents (BM25) --------------------------------------
+
+export type CatalogItem = { kind: 'agent' | 'skill'; name: string; description: string; source: string; plugin?: string }
+
+const STOP = new Set(
+  ('the and for with that this from your you are was were have has had not but can will use used using when then than into onto over under about also just like want need make made get got ' +
+    'its their them they what which who whom how why where does did doing done any all some one two out off our his her she him per via too very more most much many such other another each ' +
+    'please should would could might must may let lets file files code these those there here').split(' '),
+)
+
+const stem = (w: string) => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)
+
+export function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(w => w.length >= 3 && !STOP.has(w))
+    .map(stem)
+}
+
+export type CatalogIndex = { items: readonly CatalogItem[]; docs: ReadonlyArray<Map<string, number>>; lens: readonly number[]; avg: number; df: Map<string, number> }
+
+/** Each item becomes a bag of words: its name three times (so naming it counts) plus its description. */
+export function buildIndex(items: readonly CatalogItem[]): CatalogIndex {
+  const docs: Array<Map<string, number>> = []
+  const lens: number[] = []
+  const df = new Map<string, number>()
+  for (const it of items) {
+    const words = [...tokenize(it.name), ...tokenize(it.name), ...tokenize(it.name), ...tokenize(it.description)]
+    const tf = new Map<string, number>()
+    for (const w of words) tf.set(w, (tf.get(w) ?? 0) + 1)
+    docs.push(tf)
+    lens.push(words.length)
+    for (const w of tf.keys()) df.set(w, (df.get(w) ?? 0) + 1)
+  }
+  const avg = lens.length > 0 ? lens.reduce((a, b) => a + b, 0) / lens.length : 0
+  return { items, docs, lens, avg, df }
+}
+
+export type Suggestion = { item: CatalogItem; score: number; matched: string[] }
+export type SuggestOptions = { minScore: number; minMatches: number; margin: number }
+export const SUGGEST_DEFAULTS: SuggestOptions = { minScore: 5, minMatches: 2, margin: 1.25 }
+
+/** The one item that clearly fits the request, or nothing. BM25 with k1 = 1.2, b = 0.75. */
+export function suggestFrom(text: string, idx: CatalogIndex, opts: SuggestOptions = SUGGEST_DEFAULTS): Suggestion | undefined {
+  const terms = [...new Set(tokenize(text.slice(0, 600)))]
+  if (terms.length === 0 || idx.items.length === 0) return undefined
+  // A tiny catalog would give every word a near-zero weight, so score as if it held at least 40 items.
+  const n = Math.max(idx.items.length, 40)
+  const scored: Suggestion[] = []
+  idx.items.forEach((item, k) => {
+    const tf = idx.docs[k]
+    const len = idx.lens[k]
+    if (!tf || len === undefined) return
+    let score = 0
+    const matched: string[] = []
+    for (const t of terms) {
+      const f = tf.get(t)
+      if (!f) continue
+      const dfT = idx.df.get(t) ?? 0
+      const idf = Math.log(1 + (n - dfT + 0.5) / (dfT + 0.5))
+      score += (idf * (f * 2.2)) / (f + 1.2 * (1 - 0.75 + 0.75 * (len / (idx.avg || 1))))
+      matched.push(t)
+    }
+    if (matched.length > 0) scored.push({ item, score, matched })
+  })
+  scored.sort((a, b) => b.score - a.score)
+  const best = scored[0]
+  if (!best || best.score < opts.minScore || best.matched.length < opts.minMatches) return undefined
+  const second = scored[1]
+  if (second && best.score < opts.margin * second.score) return undefined
+  return best
 }
