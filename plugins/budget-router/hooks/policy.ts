@@ -66,6 +66,9 @@ export type LogEntry =
   | { t: number; k: 'hint'; agent: string }
   | { t: number; k: 'escalate'; from: string; to: string; errors: number }
   | { t: number; k: 'skill'; name: string }
+  | { t: number; k: 'idle'; ctx: number; usd: number }
+  | { t: number; k: 'learn'; bucket: string; why: string }
+  | { t: number; k: 'runbook'; name: string; act: 'offered' | 'saved' | 'hint' }
   | { t: number; k: 'turn'; sub: boolean; model: string; inp: number; out: number; cr: number; cc: number; ms: number }
 
 export const MAX_LOG = 200
@@ -111,6 +114,15 @@ export function summarize(log: readonly LogEntry[], since: number, hhmm: (ms: nu
     lines.push('  escalations (a turn with several failed tool calls got more effort or a stronger model):')
     for (const x of escalations.slice(-5)) lines.push(`    ${hhmm(x.t)} ${x.from} -> ${x.to} after ${x.errors} failed tool calls`)
   }
+  const idles = log.filter((x): x is Extract<LogEntry, { k: 'idle' }> => x.k === 'idle' && x.t >= since)
+  if (idles.length > 0) lines.push(`  idle cache rebuilds warned today: ${idles.length} (about $${idles.reduce((a, x) => a + x.usd, 0).toFixed(2)} of context re-written)`)
+  const learns = log.filter((x): x is Extract<LogEntry, { k: 'learn' }> => x.k === 'learn')
+  if (learns.length > 0) {
+    lines.push('  learned moves (the learner changed the rule-based choice):')
+    for (const x of learns.slice(-4)) lines.push(`    ${hhmm(x.t)} ${x.bucket}: ${x.why}`)
+  }
+  const books = log.filter((x): x is Extract<LogEntry, { k: 'runbook' }> => x.k === 'runbook')
+  if (books.length > 0) lines.push(`  runbooks: ${books.filter(x => x.act === 'offered').length} offered, ${books.filter(x => x.act === 'saved').length} saved, ${books.filter(x => x.act === 'hint').length} suggested for a prompt`)
   const today = log.filter((x): x is Extract<LogEntry, { k: 'turn' }> => x.k === 'turn' && x.t >= since)
   if (today.length > 0) {
     const sum = (rows: typeof today) =>
@@ -324,6 +336,9 @@ const LADDER: ReadonlyArray<LadderSpec> = [
   { family: 'opus', effort: 'high' },
   { family: 'opus', effort: 'xhigh' },
 ]
+export const LADDER_SIZE = LADDER.length
+export const rungSpec = (r: number): LadderSpec => LADDER[clamp(r, 0, LADDER.length - 1)] ?? LADDER[0]!
+export const rungName = (r: number): string => `${rungSpec(r).family}·${rungSpec(r).effort}`
 const EFFORT_RANK: Record<EffortName, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 const FAMILY_RANK: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2 }
 const costKey = (s: LadderSpec) => FAMILY_RANK[s.family] * 10 + EFFORT_RANK[s.effort]
@@ -385,7 +400,7 @@ export function applyEscalation(spec: LadderSpec, esc: Escalation): LadderSpec {
 
 // -- Suggesting installed skills and agents (BM25) --------------------------------------
 
-export type CatalogItem = { kind: 'agent' | 'skill'; name: string; description: string; source: string; plugin?: string }
+export type CatalogItem = { kind: 'agent' | 'skill' | 'runbook'; name: string; description: string; source: string; plugin?: string }
 
 const STOP = new Set(
   ('the and for with that this from your you are was were have has had not but can will use used using when then than into onto over under about also just like want need make made get got ' +
@@ -455,4 +470,224 @@ export function suggestFrom(text: string, idx: CatalogIndex, opts: SuggestOption
   const second = scored[1]
   if (second && best.score < opts.margin * second.score) return undefined
   return best
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.6: ghost-token guard (idle cache rebuilds, big contexts), runbook memory (commands you
+// keep repeating), and a small learner that finds the cheapest model and effort that works
+// for each kind of prompt.
+
+// -- Ghost tokens -----------------------------------------------------------------------
+
+// List prices in USD per million tokens: cache read and 1-hour cache write.
+const CACHE_PRICE: Record<Family, { read: number; write: number }> = {
+  opus: { read: 0.2, write: 8 },
+  sonnet: { read: 0.1, write: 4 },
+  haiku: { read: 0.01, write: 0.2 },
+}
+
+export const usd = (n: number): string => (n < 0.01 ? '<$0.01' : n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`)
+export const kTokens = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+
+/** What one more step costs just to re-read a context of this size from the cache. */
+export const stepReadUsd = (ctx: number, family: Family): number => (ctx * CACHE_PRICE[family].read) / 1e6
+
+export type IdleRebuild = { ctx: number; idleMin: number; rebuildUsd: number; warmUsd: number }
+
+/** After a long pause the cache has expired, so the next prompt re-writes the whole context. */
+export function idleRebuild(ctx: number, sinceLastMs: number | undefined, warmMs: number, minTokens: number, family: Family): IdleRebuild | undefined {
+  if (sinceLastMs === undefined || sinceLastMs <= warmMs || ctx < minTokens) return undefined
+  const pr = CACHE_PRICE[family]
+  return { ctx, idleMin: Math.round(sinceLastMs / 60_000), rebuildUsd: (ctx * pr.write) / 1e6, warmUsd: (ctx * pr.read) / 1e6 }
+}
+
+export function idleText(r: IdleRebuild): string {
+  return `Idle ${r.idleMin} min: the cache has expired, so this prompt re-writes about ${kTokens(r.ctx)} tokens of context (about ${usd(r.rebuildUsd)}, against ${usd(r.warmUsd)} warm). If you do not need that history, /compact or a fresh session is cheaper.`
+}
+
+/** Which multiple of the size threshold the context is in (0 below it). */
+export const sizeBucket = (ctx: number, threshold: number): number => (threshold <= 0 ? 0 : Math.floor(ctx / threshold))
+
+export function sizeNudgeText(ctx: number, family: Family): string {
+  return `Context is ${kTokens(ctx)} tokens: every step re-reads it (about ${usd(stepReadUsd(ctx, family))} each on ${family}). /compact or a fresh session cuts that; long build or log output belongs with a helper agent.`
+}
+
+// -- Runbook memory ---------------------------------------------------------------------
+
+export type CmdStat = { n: number; last: number; tool: string; sample: string; offered?: boolean; saved?: string }
+export type CmdStats = Record<string, CmdStat>
+
+/** The command with paths, hashes and numbers blanked, so two runs of the same job compare equal. */
+export function normalizeCommand(cmd: string): string {
+  return cmd
+    .replace(/"[A-Za-z]:[\\/][^"]*"/g, '"<path>"')
+    .replace(/'[A-Za-z]:[\\/][^']*'/g, "'<path>'")
+    .replace(/[A-Za-z]:[\\/][^\s"']+/g, '<path>')
+    .replace(/\b[0-9a-f]{7,}\b/gi, '<hex>')
+    .replace(/\d+/g, 'N')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400)
+}
+
+const SCRATCH_RE = /scratchpad|Temp[\\/]claude|\/tmp\/|\$env:TEMP|%TEMP%/i
+
+/** Worth keeping: long enough to be a job, short enough to read, and not tied to a scratch folder. */
+export function isRunbookCandidate(cmd: string): boolean {
+  const c = cmd.trim()
+  return c.length >= 40 && c.length <= 2000 && !SCRATCH_RE.test(c)
+}
+
+/** Best-effort check by shape (key prefixes, headers, logins in URLs, long unbroken strings). */
+export function looksSensitive(text: string): boolean {
+  return (
+    /-----BEGIN [A-Z ]*-----/.test(text) ||
+    /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]{16,}/.test(text) ||
+    /:\/\/[^/\s:@]+:[^/\s@]+@/.test(text) ||
+    /\b(sk|ghp|gho|ghs|xox[abpr]|AKIA|AIza)[-_A-Za-z0-9]{12,}/.test(text) ||
+    /(?<![A-Za-z0-9_+=/-])(?=[A-Za-z0-9_+=]*\d)(?=[A-Za-z0-9_+=]*[A-Za-z])[A-Za-z0-9_+=]{28,}(?![A-Za-z0-9_+=/-])/.test(text)
+  )
+}
+
+const MAX_CMDS = 150
+
+/** Count one more run of a command. `crossed` is true the moment it reaches `after` runs. */
+export function noteCommand(stats: CmdStats, tool: string, cmd: string, now: number, after: number): { stats: CmdStats; key: string; crossed: boolean } | undefined {
+  if (!isRunbookCandidate(cmd)) return undefined
+  const key = `${tool}:${normalizeCommand(cmd)}`
+  const prev = stats[key]
+  const next: CmdStat = { n: (prev?.n ?? 0) + 1, last: now, tool, sample: cmd.trim(), ...(prev?.offered ? { offered: true } : {}), ...(prev?.saved ? { saved: prev.saved } : {}) }
+  let out: CmdStats = { ...stats, [key]: next }
+  const keys = Object.keys(out)
+  if (keys.length > MAX_CMDS) {
+    // drop the least-used, oldest entries that are not saved
+    const drop = keys.filter(k => !out[k]?.saved).sort((a, b) => (out[a]?.n ?? 0) - (out[b]?.n ?? 0) || (out[a]?.last ?? 0) - (out[b]?.last ?? 0)).slice(0, keys.length - MAX_CMDS)
+    out = Object.fromEntries(Object.entries(out).filter(([k]) => !drop.includes(k)))
+  }
+  return { stats: out, key, crossed: !next.offered && !next.saved && next.n >= after }
+}
+
+/** A short file-safe name from the command's own words. */
+export function runbookName(sample: string): string {
+  const words = tokenize(sample.replace(/[A-Za-z]:[\\/][^\s"']+/g, ' ').replace(/[$&|;<>"'`(){}\[\]=]/g, ' '))
+  const picked: string[] = []
+  for (const w of words) if (!picked.includes(w) && picked.length < 3 && /^[a-z]/.test(w)) picked.push(w)
+  return picked.length > 0 ? picked.join('-').slice(0, 40) : 'runbook'
+}
+
+export const runbookFile = (name: string, tool: string): string => `${name}.${/powershell|pwsh/i.test(tool) ? 'ps1' : 'sh'}`
+
+export type Runbook = { name: string; file: string; tool: string; description: string; runs: string }
+
+export function runbookRunCommand(rb: Pick<Runbook, 'file' | 'tool'>): string {
+  return /powershell|pwsh/i.test(rb.tool) ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${rb.file}"` : `bash "${rb.file}"`
+}
+
+export function runbookItem(rb: Runbook): CatalogItem {
+  return { kind: 'runbook', name: rb.name, description: rb.description, source: 'runbook' }
+}
+
+export function runbookHintText(rb: Runbook): string {
+  return `[budget-router hint] You saved a runbook for this: ${rb.name}. Run it instead of rebuilding the command: ${rb.runs}`
+}
+
+export function runbookBody(sample: string, tool: string, now: Date): string {
+  const bash = !/powershell|pwsh/i.test(tool)
+  return `# Saved by budget-router on ${now.toISOString().slice(0, 10)} from a command you ran several times.\n# Read it before you run it.\n${bash ? 'set -e\n' : ''}${sample}\n`
+}
+
+// -- Learning the cheapest model and effort that works ----------------------------------
+
+export type Counts = { s: number; f: number }
+export type Learned = Record<string, Record<string, Counts>>
+
+const DOMAINS: ReadonlyArray<[string, RegExp]> = [
+  ['unreal', /unreal|\bue ?[45]\b|uproject|blueprint|uasset|\bubt\b|lyra|niagara|pilgerweg/i],
+  ['git', /\bgit\b|commit|branch|merge|pull request|\bpush\b|rebase/i],
+  ['docs', /readme|documentation|write[- ]?up|explain|summar|diagram|report/i],
+  ['system', /disk|storage|drive|folder|install|uninstall|delete|move|junction|registry|service/i],
+  ['code', /function|\bbug\b|refactor|\btest|compile|class\b|stack ?trace|\berror\b|implement|plugin/i],
+]
+
+/** The kind of work a prompt is: its tier plus a coarse topic, so the learner pools similar prompts. */
+export function bucketOf(tier: string, text: string): string {
+  const t = text.slice(0, 800)
+  for (const [name, re] of DOMAINS) if (re.test(t)) return `${tier}|${name}`
+  return `${tier}|general`
+}
+
+/** Lower and upper end of a 90% Wilson interval on the success rate. */
+export function wilson(s: number, n: number, z = 1.645): { lo: number; hi: number } {
+  if (n <= 0) return { lo: 0, hi: 1 }
+  const p = s / n
+  const d = 1 + (z * z) / n
+  const c = p + (z * z) / (2 * n)
+  const m = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))
+  return { lo: Math.max(0, (c - m) / d), hi: Math.min(1, (c + m) / d) }
+}
+
+const MAX_BUCKETS = 60
+
+export function recordOutcome(l: Learned, bucket: string, rung: number, ok: boolean): Learned {
+  const row = { ...(l[bucket] ?? {}) }
+  const cur = row[String(rung)] ?? { s: 0, f: 0 }
+  row[String(rung)] = ok ? { s: cur.s + 1, f: cur.f } : { s: cur.s, f: cur.f + 1 }
+  let out: Learned = { ...l, [bucket]: row }
+  const keys = Object.keys(out)
+  if (keys.length > MAX_BUCKETS) {
+    const size = (k: string) => Object.values(out[k] ?? {}).reduce((a, c) => a + c.s + c.f, 0)
+    const drop = keys.sort((a, b) => size(a) - size(b)).slice(0, keys.length - MAX_BUCKETS)
+    out = Object.fromEntries(Object.entries(out).filter(([k]) => !drop.includes(k)))
+  }
+  return out
+}
+
+/** The user redid or corrected the answer: turn the last success into a failure. */
+export function flipOutcome(l: Learned, bucket: string, rung: number): Learned {
+  const cur = l[bucket]?.[String(rung)]
+  if (!cur || cur.s <= 0) return l
+  return { ...l, [bucket]: { ...l[bucket], [String(rung)]: { s: cur.s - 1, f: cur.f + 1 } } }
+}
+
+export const REDO_RE = /^\s*(no\b|nope|wrong|that'?s (not|wrong)|not what i|still (broken|failing|not|wrong)|again\b|try again|redo|you (missed|forgot|didn'?t)|doesn'?t work|didn'?t work|it'?s still)/i
+
+export type LearnOptions = { minSamples: number; target: number; explore: number; rand: () => number }
+export const LEARN_DEFAULTS: LearnOptions = { minSamples: 8, target: 0.85, explore: 0.1, rand: Math.random }
+
+export type LearnedMove = { steps: number; why: string }
+
+/**
+ * At most one rung up or down from the rule-based choice, and only on evidence:
+ * a rung that keeps failing here moves up; a rung that nearly always works lets us try the
+ * next cheaper one (and once that has a record, keep using it if it works as well).
+ */
+export function learnedMove(l: Learned, bucket: string, baseRung: number, ladderSize: number, opts: LearnOptions = LEARN_DEFAULTS): LearnedMove | undefined {
+  const row = l[bucket]
+  if (!row) return undefined
+  const at = (r: number): Counts => row[String(r)] ?? { s: 0, f: 0 }
+  const n = (c: Counts) => c.s + c.f
+  const base = at(baseRung)
+  if (n(base) >= opts.minSamples) {
+    const w = wilson(base.s, n(base))
+    if (w.hi < 0.6 && baseRung < ladderSize - 1) return { steps: -1, why: `learned: ${Math.round(100 * (base.s / n(base)))}% success here, one step up` }
+  }
+  if (baseRung > 0) {
+    const cheaper = at(baseRung - 1)
+    if (n(cheaper) >= opts.minSamples && wilson(cheaper.s, n(cheaper)).lo >= opts.target - 0.05) return { steps: 1, why: 'learned: the cheaper step works here' }
+    if (n(base) >= opts.minSamples && wilson(base.s, n(base)).lo >= opts.target && n(cheaper) < opts.minSamples && opts.rand() < opts.explore) return { steps: 1, why: 'learned: trying the cheaper step' }
+  }
+  return undefined
+}
+
+export function learnedSummary(l: Learned, rungName: (r: number) => string): string[] {
+  const rows: Array<{ bucket: string; n: number; text: string }> = []
+  for (const [bucket, row] of Object.entries(l)) {
+    const parts = Object.entries(row)
+      .map(([r, c]) => ({ r: Number(r), c, n: c.s + c.f }))
+      .filter(x => x.n > 0)
+      .sort((a, b) => a.r - b.r)
+      .map(x => `${rungName(x.r)} ${Math.round((100 * x.c.s) / x.n)}% of ${x.n}`)
+    if (parts.length > 0) rows.push({ bucket, n: Object.values(row).reduce((a, c) => a + c.s + c.f, 0), text: parts.join(', ') })
+  }
+  return rows.sort((a, b) => b.n - a.n).slice(0, 8).map(x => `    ${x.bucket}: ${x.text}`)
 }

@@ -18,6 +18,8 @@ import {
 import type { Finding, LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, countTurnErrors, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
+import type { CmdStats, Learned, Runbook } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
 // what the prompt asks for, and tightens that choice as today's share of the
@@ -30,7 +32,7 @@ type Family = 'haiku' | 'sonnet' | 'opus'
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type Tier = 'trivial' | 'light' | 'standard' | 'deep' | 'max'
 type Spec = { family: Family; effort: Effort }
-type Route = Spec & { tier: Tier; why: string }
+type Route = Spec & { tier: Tier; why: string; rung?: number }
 type Pin = { tier?: Tier; spec?: Spec }
 
 // Today's share of the weekly limit, kept in the plugin store so every
@@ -86,6 +88,17 @@ type Opts = {
   dayStartHour: number
   dayEndHour: number
   paceSlack: number
+  idleGuard: string
+  idleMinTokens: number
+  nudgeTokens: number
+  runbooks: boolean
+  runbookAfter: number
+  runbookDir: string
+  learn: boolean
+  learnMinSamples: number
+  learnExplore: number
+  reflect: boolean
+  reflectPerDay: number
 }
 
 const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
@@ -203,6 +216,17 @@ function readOptions(options: PluginOptions): Opts {
     dayStartHour: num(options.dayStartHour, 8),
     dayEndHour: num(options.dayEndHour, 24),
     paceSlack: num(options.paceSlack, 15),
+    idleGuard: ['off', 'warn', 'ask'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
+    idleMinTokens: num(options.idleMinTokens, 60_000),
+    nudgeTokens: num(options.nudgeTokens, 200_000),
+    runbooks: bool(options.runbooks, true),
+    runbookAfter: num(options.runbookAfter, 4),
+    runbookDir: str(options.runbookDir, ''),
+    learn: bool(options.learn, true),
+    learnMinSamples: num(options.learnMinSamples, 8),
+    learnExplore: num(options.learnExplore, 0.1),
+    reflect: bool(options.reflect, true),
+    reflectPerDay: num(options.reflectPerDay, 8),
   }
 }
 
@@ -384,9 +408,203 @@ async function refreshCatalog($: EngineInterface) {
 }
 
 function catalogSuggest(text: string) {
-  if (catalog.size === 0) return undefined
-  catalogIndex ??= buildIndex([...catalog.values()])
+  const items = [...(o.catalogHints ? catalog.values() : []), ...(o.runbooks ? runbooks.map(runbookItem) : [])]
+  if (items.length === 0) return undefined
+  catalogIndex ??= buildIndex(items)
   return suggestFrom(text, catalogIndex)
+}
+
+// ---- v0.6: ghost-token guard, runbook memory, learner ----
+const CMDS_KEY = 'cmdstats'
+const SEEN_KEY = 'cmdseen'
+const BOOK_KEY = 'runbooks'
+const BANDIT_KEY = 'bandit'
+const REFLECT_KEY = 'reflect'
+let cmdStats: CmdStats = {}
+let runbooks: Runbook[] = []
+let learnedData: Learned = {}
+let seenToolUse: string[] = []
+let v06Loaded = false
+let lastSizeBucket = 0
+let idleAskedAt = 0
+let currentBucket = ''
+let pending: { bucket: string; rung: number; text: string } | undefined
+let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
+
+const SHELLS = new Set(['Bash', 'PowerShell'])
+const waiting = () =>
+  Object.entries(cmdStats)
+    .filter(([, c]) => !c.saved && c.n >= 2)
+    .sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last)
+
+async function loadV06($: EngineInterface) {
+  cmdStats = ((await $.store.get(CMDS_KEY)) as CmdStats | undefined) ?? {}
+  runbooks = ((await $.store.get(BOOK_KEY)) as Runbook[] | undefined) ?? []
+  learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
+  seenToolUse = ((await $.store.get(SEEN_KEY)) as string[] | undefined) ?? []
+  catalogIndex = undefined
+  v06Loaded = true
+}
+
+// After each main turn: count shell commands you ran, then record how the turn went.
+async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }) {
+  if (!v06Loaded) await loadV06($)
+  let rows: Awaited<ReturnType<EngineInterface['session']['messages']>> = []
+  try {
+    rows = await $.session.messages()
+  } catch {
+    return
+  }
+  if (o.runbooks) {
+    try {
+      let changed = false
+      for (const row of rows) {
+        for (const u of row.toolUses ?? []) {
+          const cmd = (u.input as { command?: unknown }).command
+          if (!SHELLS.has(u.tool) || typeof cmd !== 'string' || seenToolUse.includes(u.tool_use_id)) continue
+          seenToolUse = [...seenToolUse.slice(-299), u.tool_use_id]
+          const hit = noteCommand(cmdStats, u.tool, cmd, Date.now(), o.runbookAfter)
+          if (!hit) continue
+          cmdStats = hit.stats
+          changed = true
+          if (hit.crossed && cmdStats[hit.key]) {
+            cmdStats = { ...cmdStats, [hit.key]: { ...cmdStats[hit.key]!, offered: true } }
+            const snippet = cmd.trim().replace(/\s+/g, ' ').slice(0, 70)
+            $.ui.toast(`You have run this ${cmdStats[hit.key]!.n} times: "${snippet}". /runbook save keeps it as a script I can point you to.`, { timeoutMs: 20_000 })
+            await addLog($, { t: Date.now(), k: 'runbook', name: runbookName(cmd), act: 'offered' })
+          }
+        }
+      }
+      if (changed) {
+        await $.store.set(CMDS_KEY, cmdStats)
+        await $.store.set(SEEN_KEY, seenToolUse)
+      }
+    } catch {
+      // runbook memory is optional
+    }
+  }
+  if (o.learn && pending) {
+    const done = pending
+    pending = undefined
+    try {
+      const errors = countTurnErrors(rows)
+      let ok = !e.isAborted && errors <= 1
+      if (o.reflect && !e.isAborted && errors >= 1 && errors <= 2) {
+        const verdictOk = await reflectJudge($, done.text, e.answer, errors)
+        if (verdictOk !== undefined) ok = verdictOk
+      }
+      learnedData = recordOutcome(learnedData, done.bucket, done.rung, ok)
+      lastOutcome = { bucket: done.bucket, rung: done.rung, ok, at: Date.now() }
+      await $.store.set(BANDIT_KEY, learnedData)
+    } catch {
+      // learning is optional
+    }
+  }
+}
+
+// A cheap second opinion for the unclear cases (one or two failed tool calls), a few per day.
+async function reflectJudge($: EngineInterface, request: string, answer: string, errors: number): Promise<boolean | undefined> {
+  try {
+    const day = localDay(Date.now())
+    const used = (await $.store.get(REFLECT_KEY)) as { day: string; n: number } | undefined
+    const n = used && used.day === day ? used.n : 0
+    if (n >= o.reflectPerDay) return undefined
+    await $.store.set(REFLECT_KEY, { day, n: n + 1 })
+    const r = await $.model.complete({
+      model: o.models.haiku,
+      system: 'You grade whether an AI assistant completed a request. Reply with exactly one word: GOOD or WEAK.',
+      prompt: `Request: ${request}\nFailed tool calls during the turn: ${errors}\nFinal reply: ${answer.slice(0, 600)}`,
+      maxTokens: 8,
+      effort: 'low',
+      timeoutMs: 6000,
+    })
+    const word = r.isAnswered ? r.text.toUpperCase().match(/GOOD|WEAK/)?.[0] : undefined
+    return word === undefined ? undefined : word === 'GOOD'
+  } catch {
+    return undefined
+  }
+}
+
+async function homeDir($: EngineInterface): Promise<string> {
+  return (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
+}
+
+async function writeRunbook($: EngineInterface, dir: string, file: string, body: string) {
+  const full = `${dir}/${file}`
+  try {
+    await $.fs.write(full, body)
+    return
+  } catch {
+    // the folder may not exist yet
+  }
+  if (/^[A-Za-z]:/.test(dir)) {
+    await $.process.run(['powershell', '-NoProfile', '-Command', `New-Item -ItemType Directory -Force -Path '${dir.replace(/'/g, "''")}' | Out-Null`], { timeoutMs: 10_000 })
+  } else {
+    await $.process.run(['mkdir', '-p', dir], { timeoutMs: 10_000 })
+  }
+  await $.fs.write(full, body)
+}
+
+async function runbookCommand($: EngineInterface, raw: string): Promise<string> {
+  if (!v06Loaded) await loadV06($)
+  const [verb = 'list', ...rest] = raw.trim().split(/\s+/)
+  const cands = waiting()
+  if (verb === '' || verb === 'list') {
+    const lines = ['Runbooks (commands you keep repeating, saved as scripts):']
+    if (runbooks.length === 0) lines.push('  none saved yet')
+    for (const rb of runbooks) lines.push(`  ${rb.name}: ${rb.runs}`)
+    lines.push('Repeated commands not saved yet (most runs first):')
+    if (cands.length === 0) lines.push('  none')
+    cands.slice(0, 8).forEach(([, c], n) => lines.push(`  #${n + 1} ${c.n}x ${c.tool}: ${c.sample.replace(/\s+/g, ' ').slice(0, 90)}`))
+    lines.push('/runbook save [#n] [name] [words describing it] | forget <name> | ignore')
+    return lines.join('\n')
+  }
+  if (verb === 'ignore') {
+    for (const [k, c] of cands) cmdStats[k] = { ...c, offered: true }
+    await $.store.set(CMDS_KEY, cmdStats)
+    return 'Will not offer the commands currently listed again.'
+  }
+  if (verb === 'forget') {
+    const name = rest[0]
+    const before = runbooks.length
+    runbooks = runbooks.filter(r => r.name !== name)
+    if (runbooks.length === before) return `No runbook named "${name ?? ''}".`
+    await $.store.set(BOOK_KEY, runbooks)
+    catalogIndex = undefined
+    return `Forgot ${name}. The script file was left where it is.`
+  }
+  if (verb === 'save') {
+    let args = rest
+    let pick = cands[0]
+    if (args[0] && /^#?\d+$/.test(args[0])) {
+      pick = cands[Number(args[0].replace('#', '')) - 1]
+      args = args.slice(1)
+    }
+    if (!pick) return 'Nothing to save yet: no command has been repeated.'
+    const [key, stat] = pick
+    if (looksSensitive(stat.sample)) return 'That command looks like it contains a key, a login or other private value, so it was not saved. Put the value in an environment variable and try again.'
+    let name = (args[0] ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '') || runbookName(stat.sample)
+    const base = name
+    for (let n = 2; runbooks.some(r => r.name === name); n++) name = `${base}-${n}`
+    const dir = o.runbookDir !== '' ? o.runbookDir.replace(/\\/g, '/') : `${(await homeDir($)).replace(/\\/g, '/')}/.claude/runbooks`
+    if (dir.startsWith('/.claude')) return 'Could not find your home folder; set the runbookDir option and try again.'
+    const file = `${dir}/${runbookFile(name, stat.tool)}`
+    try {
+      await writeRunbook($, dir, runbookFile(name, stat.tool), runbookBody(stat.sample, stat.tool, new Date()))
+    } catch (err) {
+      return `Could not write ${file}: ${err instanceof Error ? err.message : String(err)}`
+    }
+    const rb: Runbook = { name, file, tool: stat.tool, description: `${args.slice(1).join(' ')} ${stat.sample}`.slice(0, 600), runs: '' }
+    rb.runs = runbookRunCommand(rb)
+    runbooks = [...runbooks, rb]
+    cmdStats[key] = { ...stat, saved: name }
+    catalogIndex = undefined
+    await $.store.set(BOOK_KEY, runbooks)
+    await $.store.set(CMDS_KEY, cmdStats)
+    await addLog($, { t: Date.now(), k: 'runbook', name, act: 'saved' })
+    return `Saved ${file}\nRun it with: ${rb.runs}\nFuture prompts that match it will get a one-line pointer to it. Read the script before you run it.`
+  }
+  return 'Usage: /runbook [list] | save [#n] [name] [words describing it] | forget <name> | ignore'
 }
 
 // A turn with several failed tool calls gets more effort, and after a long run a stronger model.
@@ -507,6 +725,17 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
       notes.push('cache cold, switched freely')
     }
   }
+  // The learner: move one rung on evidence from earlier outcomes of this kind of prompt.
+  if (o.learn && !pin && tier !== 'max' && currentBucket !== '') {
+    const mv = learnedMove(learnedData, currentBucket, ladderIndex(spec), LADDER_SIZE, { minSamples: o.learnMinSamples, target: 0.85, explore: o.learnExplore, rand: Math.random })
+    if (mv) {
+      const moved = shiftLadder(spec, mv.steps)
+      if (moved.family !== spec.family || moved.effort !== spec.effort) {
+        spec = moved
+        notes.push(mv.why)
+      }
+    }
+  }
   // Pace control: spending ahead of an even day sheds one or two cost steps before any cap
   // applies. An explicit "think hard" (max) and a /route pin are left alone.
   const shed = o.paceControl && !pin && tier !== 'max' ? paceSteps(pacerU) : 0
@@ -524,7 +753,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     spec = { family: 'sonnet', effort: p.level >= 2 ? 'low' : spec.effort }
     notes.push('too long for haiku')
   }
-  return { ...spec, tier, why: notes.join(', ') }
+  return { ...spec, tier, why: notes.join(', '), rung: ladderIndex(spec) }
 }
 
 function showStatus($: EngineInterface, p: Pressure) {
@@ -572,6 +801,14 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   )
   if (paceNote !== '') lines.push(`  ${paceNote}`)
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
+  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle${o.idleGuard === 'ask' ? '; pauses that prompt once' : ''})`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
+  lines.push(`  runbooks: ${!o.runbooks ? 'off' : `${runbooks.length} saved, ${waiting().length} repeated command(s) waiting (/runbook)`}`)
+  if (!o.learn) lines.push('  learner: off')
+  else {
+    const rows = learnedSummary(learnedData, rungName)
+    lines.push(`  learner: on, success rate per kind of prompt and model step${rows.length === 0 ? ' (no turns recorded yet)' : ':'}`)
+    lines.push(...rows)
+  }
   return lines.join('\n')
 }
 
@@ -609,11 +846,17 @@ export const register: Register = (on, options) => {
       description: 'Pin the model/effort tier for this session, or auto',
       argumentHint: '[why|auto|trivial|light|standard|deep|max|haiku|sonnet|opus] [low|medium|high|xhigh|max]',
     })
+    await $.command.register({
+      name: 'runbook',
+      description: 'Save commands you keep repeating as scripts, and list them',
+      argumentHint: '[list|save [#n] [name]|forget <name>|ignore]',
+    })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
     soft = (await $.store.get(SOFT_KEY)) === true
     const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
     await refreshCatalog($)
+    await loadV06($)
     const p = pressure(await loadLedger($), Date.now())
     level = p.level
     showStatus($, p)
@@ -629,6 +872,11 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     ctxTokens = e.context.tokens ?? ctxTokens
+    if (o.nudgeTokens > 0) {
+      const b = sizeBucket(ctxTokens, o.nudgeTokens)
+      if (b > lastSizeBucket) $.ui.toast(sizeNudgeText(ctxTokens, route?.family ?? 'sonnet'), { timeoutMs: 20_000 })
+      lastSizeBucket = b
+    }
     const now = Date.now()
     const prev = await loadLedger($)
     const l = absorb(prev, e.rateLimits, now)
@@ -652,7 +900,8 @@ export const register: Register = (on, options) => {
     const l = await loadLedger($)
     const p = pressure(l, now)
     level = p.level
-    const isOwnCommand = /^\s*\/(budget|route)\b/.test(e.text)
+    if (!v06Loaded) await loadV06($)
+    const isOwnCommand = /^\s*\/(budget|route|runbook)\b/.test(e.text)
     if (p.level === 3 && o.lockAtLimit && !soft && !isOwnCommand && !((l?.unlockUntil ?? 0) > now)) {
       return {
         drop: `⛔ Today's Claude budget is spent (${Math.round(p.daily)}% of today's share; week at ${Math.round(p.week)}%). Locked until ${clock(nextMidnight(now))}. /budget unlock overrides for 1 hour.`,
@@ -666,12 +915,31 @@ export const register: Register = (on, options) => {
       } catch {
         // keep the last known size
       }
+      // A redo or correction right after a "successful" turn means it was not.
+      if (o.learn && lastOutcome?.ok && now - lastOutcome.at < 15 * 60_000 && REDO_RE.test(e.text)) {
+        learnedData = flipOutcome(learnedData, lastOutcome.bucket, lastOutcome.rung)
+        lastOutcome = { ...lastOutcome, ok: false }
+        await $.store.set(BANDIT_KEY, learnedData)
+      }
+      // Ghost-token guard: after a long pause the cache has expired and the whole context is re-written.
+      const idle = o.idleGuard === 'off' ? undefined : idleRebuild(ctxTokens, lastMainTurnAt > 0 ? now - lastMainTurnAt : undefined, o.cacheWarmMinutes * 60_000, o.idleMinTokens, route?.family ?? 'sonnet')
+      if (idle) {
+        await addLog($, { t: now, k: 'idle', ctx: idle.ctx, usd: Math.round(idle.rebuildUsd * 100) / 100 })
+        if (o.idleGuard === 'ask' && now - idleAskedAt > 10 * 60_000) {
+          idleAskedAt = now
+          return { drop: `${idleText(idle)} Send the prompt again to carry on as it is.` }
+        }
+        $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
+      }
       let c: { tier: Tier; why: string } = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : await classify($, e.text, route?.tier)
       // Build, link and cook errors need more than the cheapest tier.
       if (o.unrealRules && !pin && isUnrealBuildPrompt(e.text) && (c.tier === 'trivial' || c.tier === 'light')) {
         c = { tier: 'standard', why: `${c.why}; unreal build text` }
       }
+      currentBucket = o.learn ? bucketOf(c.tier, e.text) : ''
       route = decide(c.tier, c.why, p)
+      pending = o.learn && !pin ? { bucket: currentBucket, rung: route.rung ?? 0, text: e.text.slice(0, 300) } : undefined
+      if (route.why.includes('learned')) await addLog($, { t: now, k: 'learn', bucket: currentBucket, why: route.why.split(', ').filter(x => x.startsWith('learned')).join('; ') })
       await addLog($, {
         t: now,
         k: 'prompt',
@@ -689,12 +957,13 @@ export const register: Register = (on, options) => {
         if (hint) {
           extra = [hint.text]
           await addLog($, { t: now, k: 'hint', agent: hint.agent })
-        } else if (o.catalogHints) {
+        } else if (o.catalogHints || o.runbooks) {
           const found = catalogSuggest(e.text)
           if (found) {
+            const book = found.item.kind === 'runbook' ? runbooks.find(r => r.name === found.item.name) : undefined
             const owner = found.item.plugin ? ` from ${found.item.plugin}` : ''
-            extra = [`[budget-router hint] An installed ${found.item.kind}${owner} may fit this request: ${found.item.name}. Use it only if it really matches.`]
-            await addLog($, { t: now, k: 'hint', agent: found.item.name })
+            extra = [book ? runbookHintText(book) : `[budget-router hint] An installed ${found.item.kind}${owner} may fit this request: ${found.item.name}. Use it only if it really matches.`]
+            await addLog($, book ? { t: now, k: 'runbook', name: book.name, act: 'hint' } : { t: now, k: 'hint', agent: found.item.name })
           }
         }
       }
@@ -761,7 +1030,10 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
-    if (e.agentId === undefined) lastMainTurnAt = Date.now()
+    if (e.agentId === undefined) {
+      lastMainTurnAt = Date.now()
+      await afterMainTurn($, e)
+    }
     const u = r.usage ?? e.usage
     if (u) {
       await addLog($, {
@@ -810,6 +1082,8 @@ export const register: Register = (on, options) => {
     showStatus($, p)
     return { text: report(l, p, now) }
   })
+
+  on('command.run', { command: 'runbook' }, async ($, e) => ({ text: await runbookCommand($, e.args) }))
 
   on('command.run', { command: 'route' }, async ($, e) => {
     const [a = '', b = ''] = e.args.trim().toLowerCase().split(/\s+/)

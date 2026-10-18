@@ -571,3 +571,259 @@ describe('escalation inside turn.step', () => {
     expect(String(seen?.model)).toContain('haiku')
   })
 })
+
+// --- v0.6 ----------------------------------------------------------------------------------
+
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, isRunbookCandidate, learnedMove, looksSensitive, noteCommand, normalizeCommand, recordOutcome, runbookFile, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, stepReadUsd, wilson } from './policy'
+import type { CmdStats, Learned } from './policy'
+
+describe('ghost-token guard', () => {
+  const warm = 55 * 60_000
+  test('warns only when the cache has expired and the context is big enough', async () => {
+    expect(idleRebuild(300_000, 10 * 60_000, warm, 60_000, 'sonnet')).toBeUndefined()
+    expect(idleRebuild(30_000, 90 * 60_000, warm, 60_000, 'sonnet')).toBeUndefined()
+    expect(idleRebuild(300_000, undefined, warm, 60_000, 'sonnet')).toBeUndefined()
+    const r = idleRebuild(300_000, 90 * 60_000, warm, 60_000, 'sonnet')
+    expect(r?.idleMin).toBe(90)
+    expect(Math.round((r?.rebuildUsd ?? 0) * 100) / 100).toBe(1.2)
+    expect(Math.round((r?.warmUsd ?? 0) * 100) / 100).toBe(0.03)
+    expect(idleText(r!)).toContain('300k')
+    expect(idleText(r!)).toContain('$1.20')
+  })
+
+  test('size notices fire on each multiple of the threshold and say what a step costs', async () => {
+    expect([0, 199_999, 200_000, 399_999, 400_000].map(n => sizeBucket(n, 200_000))).toEqual([0, 0, 1, 1, 2])
+    expect(sizeBucket(500_000, 0)).toBe(0)
+    expect(Math.round(stepReadUsd(1_000_000, 'opus') * 100) / 100).toBe(0.2)
+    expect(sizeNudgeText(250_000, 'opus')).toContain('250k')
+  })
+})
+
+describe('runbook memory', () => {
+  const build = 'cd "D:\\Unreal Projects\\Pilgerweg"; & "C:\\Program Files\\Epic Games\\UE_5.7\\Engine\\Build\\BatchFiles\\Build.bat" PilgerwegEditor Win64 Development -waitmutex'
+
+  test('the same job compares equal across paths and numbers', async () => {
+    expect(normalizeCommand(build)).toBe(normalizeCommand(build.replace('UE_5.7', 'UE_5.8').replace('D:\\Unreal Projects\\Pilgerweg', 'E:\\Other')))
+  })
+
+  test('only real jobs are candidates', async () => {
+    expect(isRunbookCandidate('ls')).toBe(false)
+    expect(isRunbookCandidate(build)).toBe(true)
+    expect(isRunbookCandidate('tail -c 2500 "C:/Users/VagDi/AppData/Local/Temp/claude/C--Users-VagDi/4e6f/tasks/bt65q6.output"')).toBe(false)
+    expect(isRunbookCandidate('$sp = "C:\\Users\\VagDi\\AppData\\Local\\Temp\\claude\\C--Users-VagDi\\abc\\scratchpad\\x.ps1"; & $sp -Verbose -Foo')).toBe(false)
+  })
+
+  test('private-looking values are never saved', async () => {
+    expect(looksSensitive('curl -H "Authorization: Bearer abcdefghijklmnop1234" example.org')).toBe(true)
+    expect(looksSensitive('git clone https://user:hunter2pw@host/repo.git')).toBe(true)
+    expect(looksSensitive('export X=sk-ant-api03-abcdefghijklmnop')).toBe(true)
+    expect(looksSensitive('run --id AbCdEfGh1234567890IjKlMnOpQr12')).toBe(true)
+    expect(looksSensitive('-----BEGIN PRIVATE KEY-----')).toBe(true)
+    expect(looksSensitive(build)).toBe(false)
+    expect(looksSensitive('cd /d/work && python tool.py --id 5fa55e2f-5fb7-4c84-97ef-87fb0392cf7a')).toBe(false)
+  })
+
+  test('it counts runs and flags the one that reaches the threshold', async () => {
+    let stats: CmdStats = {}
+    const crossed: boolean[] = []
+    for (let n = 0; n < 5; n++) {
+      const hit = noteCommand(stats, 'PowerShell', build, n, 4)!
+      stats = hit.stats
+      crossed.push(hit.crossed)
+    }
+    expect(crossed).toEqual([false, false, false, true, true])
+    const key = Object.keys(stats)[0]!
+    stats = { ...stats, [key]: { ...stats[key]!, offered: true } }
+    expect(noteCommand(stats, 'PowerShell', build, 9, 4)!.crossed).toBe(false)
+    expect(noteCommand({}, 'Bash', 'ls', 1, 4)).toBeUndefined()
+  })
+
+  test('names, file types and run lines', async () => {
+    expect(runbookName(build)).toMatch(/^[a-z0-9-]+$/)
+    expect(runbookFile('ue-build', 'PowerShell')).toBe('ue-build.ps1')
+    expect(runbookFile('x', 'Bash')).toBe('x.sh')
+    expect(runbookRunCommand({ file: 'C:/r/ue-build.ps1', tool: 'PowerShell' })).toContain('-File "C:/r/ue-build.ps1"')
+    expect(runbookRunCommand({ file: '/r/x.sh', tool: 'Bash' })).toBe('bash "/r/x.sh"')
+  })
+})
+
+describe('learner', () => {
+  test('buckets by tier and topic', async () => {
+    expect(bucketOf('deep', 'refactor the module and add a test')).toBe('deep|code')
+    expect(bucketOf('light', 'commit and push the branch')).toBe('light|git')
+    expect(bucketOf('standard', 'fix the Unreal build error')).toBe('standard|unreal')
+    expect(bucketOf('trivial', 'hello')).toBe('trivial|general')
+  })
+
+  test('Wilson interval tightens with data', async () => {
+    expect(wilson(0, 0)).toEqual({ lo: 0, hi: 1 })
+    expect(wilson(9, 10).lo).toBeLessThan(wilson(90, 100).lo)
+    expect(wilson(1, 10).hi).toBeLessThan(0.4)
+  })
+
+  test('outcomes add up, and a redo flips the last success', async () => {
+    let l: Learned = {}
+    l = recordOutcome(l, 'b', 3, true)
+    l = recordOutcome(l, 'b', 3, false)
+    expect(l.b?.['3']).toEqual({ s: 1, f: 1 })
+    l = flipOutcome(l, 'b', 3)
+    expect(l.b?.['3']).toEqual({ s: 0, f: 2 })
+    expect(flipOutcome(l, 'b', 3)).toBe(l)
+    expect(REDO_RE.test('no, that is wrong')).toBe(true)
+    expect(REDO_RE.test('still failing')).toBe(true)
+    expect(REDO_RE.test('now add the readme')).toBe(false)
+  })
+
+  const never = { minSamples: 8, target: 0.85, explore: 0.1, rand: () => 0.99 }
+  const always = { ...never, rand: () => 0 }
+
+  test('no record, no move', async () => {
+    expect(learnedMove({}, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
+    expect(learnedMove({ b: { '3': { s: 2, f: 3 } } }, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
+  })
+
+  test('a step that keeps failing moves up one', async () => {
+    const m = learnedMove({ b: { '3': { s: 2, f: 10 } } }, 'b', 3, LADDER_SIZE, never)
+    expect(m?.steps).toBe(-1)
+    expect(learnedMove({ b: { '5': { s: 0, f: 20 } } }, 'b', 5, LADDER_SIZE, never)).toBeUndefined() // already the top
+  })
+
+  test('a step that nearly always works may try the cheaper one, and keeps it once proven', async () => {
+    const strong: Learned = { b: { '3': { s: 20, f: 0 } } }
+    expect(learnedMove(strong, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
+    expect(learnedMove(strong, 'b', 3, LADDER_SIZE, always)?.steps).toBe(1)
+    const proven: Learned = { b: { '3': { s: 20, f: 0 }, '2': { s: 14, f: 0 } } }
+    expect(learnedMove(proven, 'b', 3, LADDER_SIZE, never)?.steps).toBe(1)
+    const shaky: Learned = { b: { '3': { s: 20, f: 0 }, '2': { s: 5, f: 5 } } }
+    expect(learnedMove(shaky, 'b', 3, LADDER_SIZE, always)).toBeUndefined()
+    expect(learnedMove({ b: { '0': { s: 30, f: 0 } } }, 'b', 0, LADDER_SIZE, always)).toBeUndefined() // nothing cheaper
+  })
+})
+
+describe('v0.6 hooks in the engine', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const quiet = (on: any, toasts: string[] = []) => {
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async (_$: unknown, e: { text: string }) => {
+      toasts.push(e.text)
+      return { value: undefined } as never
+    })
+    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+  }
+  const done = (answer = 'done') => ({ turnId: 't1', answer, durationMs: 10, isAborted: false, reason: 'answer' }) as never
+
+  const shellRows = (n: number, cmd: string) => [
+    { role: 'user', text: 'run the build', toolUses: [] },
+    ...Array.from({ length: n }, (_, k) => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: `u${k}`, tool: 'PowerShell', input: { command: cmd } }] })),
+  ]
+  const build = 'cd "D:\\Unreal Projects\\Pilgerweg"; & "C:\\Program Files\\Epic Games\\UE_5.7\\Engine\\Build\\BatchFiles\\Build.bat" PilgerwegEditor Win64 Development -waitmutex'
+
+  test('a long pause with a big context gets a notice with the cost, and is logged', { options: { classifier: 'heuristic', cacheWarmMinutes: -1, idleMinTokens: 1 } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    quiet(on, toasts)
+    on('session.messages', async () => ({ value: [] }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
+    await $.turn.complete(done())
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    expect(toasts.some(t => t.includes('re-writes about 300k'))).toBe(true)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('idle cache rebuilds warned today: 1')
+  })
+
+  test('ask mode pauses that prompt once, then lets it through', { options: { classifier: 'heuristic', cacheWarmMinutes: -1, idleMinTokens: 1, idleGuard: 'ask' } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('session.messages', async () => ({ value: [] }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
+    await $.turn.complete(done())
+    const first = await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    expect((first as { drop?: string }).drop).toContain('Send the prompt again')
+    const second = await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    expect((second as { drop?: string }).drop).toBeUndefined()
+  })
+
+  test('a command repeated four times is offered, saved on request, and then pointed to', { options: { classifier: 'heuristic', runbookDir: '/rb' } }, async ($, on) => {
+    const toasts: string[] = []
+    const written: Array<{ path: string; text: string }> = []
+    mock.store(on)
+    quiet(on, toasts)
+    on('session.messages', async () => ({ value: shellRows(4, build) }) as never)
+    on('fs.write', async (_$: unknown, e: { path: string; text: string }) => {
+      written.push(e)
+      return { value: undefined } as never
+    })
+    await $.turn.complete(done())
+    expect(toasts.some(t => t.includes('You have run this 4 times'))).toBe(true)
+    const list = await $.command.run({ command: 'runbook', args: '' } as never)
+    expect(list.text).toContain('#1 4x PowerShell')
+    const saved = await $.command.run({ command: 'runbook', args: 'save ue-build compile the pilgerweg editor target' } as never)
+    expect(saved.text).toContain('/rb/ue-build.ps1')
+    expect((written[0]?.path ?? '').split(String.fromCharCode(92)).join('/').endsWith('/rb/ue-build.ps1')).toBe(true)
+    expect(written[0]?.text).toContain('Build.bat')
+    const r = await $.prompt.submit({ text: 'please compile the pilgerweg editor target again', origin: { kind: 'composer' } } as never)
+    expect((r.context ?? []).join('\n')).toContain('ue-build')
+    expect((r.context ?? []).join('\n')).toContain('-File "/rb/ue-build.ps1"')
+    const after = await $.command.run({ command: 'runbook', args: '' } as never)
+    expect(after.text).toContain('ue-build: powershell')
+  })
+
+  test('a command that looks private is refused', { options: { classifier: 'heuristic', runbookDir: '/rb' } }, async ($, on) => {
+    const written: string[] = []
+    mock.store(on)
+    quiet(on)
+    const risky = 'curl -s -H "Authorization: Bearer abcdefghijklmnop1234" https://example.org/api/v1/items/list'
+    on('session.messages', async () => ({ value: shellRows(5, risky) }) as never)
+    on('fs.write', async (_$: unknown, e: { path: string }) => {
+      written.push(e.path)
+      return { value: undefined } as never
+    })
+    await $.turn.complete(done())
+    const r = await $.command.run({ command: 'runbook', args: 'save' } as never)
+    expect(r.text).toContain('was not saved')
+    expect(written.length).toBe(0)
+  })
+
+  test('with runbooks off nothing is counted', { options: { classifier: 'heuristic', runbooks: false } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    quiet(on, toasts)
+    on('session.messages', async () => ({ value: shellRows(6, build) }) as never)
+    await $.turn.complete(done())
+    expect(toasts.length).toBe(0)
+  })
+
+  test('a step with a poor record here is moved up one', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
+    quiet(on)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('-> opus·xhigh')
+    expect(why.text).toContain('learned: ')
+  })
+
+  test('finished turns are recorded and shown, a redo counts against the last one', { options: { classifier: 'heuristic', paceControl: false, reflect: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    on('session.messages', async () => ({ value: [{ role: 'user', text: 'x', toolUses: [] }] }) as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    await $.turn.complete(done())
+    let report = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(report.text).toContain('deep|code: opus·high 100% of 1')
+    await $.prompt.submit({ text: 'no, that is wrong, try again', origin: { kind: 'composer' } } as never)
+    report = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(report.text).toContain('deep|code: opus·high 0% of 1')
+  })
+
+  test('the learner can be switched off', { options: { classifier: 'heuristic', learn: false } }, async ($, on) => {
+    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
+    quiet(on)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    const why = await $.command.run({ command: 'route', args: 'why' } as never)
+    expect(why.text).toContain('-> opus·high')
+    const report = await $.command.run({ command: 'budget', args: '' } as never)
+    expect(report.text).toContain('learner: off')
+  })
+})

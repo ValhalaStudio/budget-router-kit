@@ -1,6 +1,6 @@
 {
   "name": "budget-router",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": {
     "name": "ValhalaStudio"
   },
@@ -214,6 +214,72 @@
       "title": "Pace slack (percentage points)",
       "description": "How far ahead of the even-pace line you may be before the controller reacts",
       "default": 15
+    },
+    "idleGuard": {
+      "type": "string",
+      "title": "Idle cache guard",
+      "description": "off, warn (a notice when a long pause means the context must be re-written) or ask (also pauses that prompt once)",
+      "default": "warn"
+    },
+    "idleMinTokens": {
+      "type": "number",
+      "title": "Idle guard minimum context",
+      "description": "Only warn when the context is at least this many tokens",
+      "default": 60000
+    },
+    "nudgeTokens": {
+      "type": "number",
+      "title": "Large-context notice",
+      "description": "Notice each time the context grows past a multiple of this many tokens (0 turns it off)",
+      "default": 200000
+    },
+    "runbooks": {
+      "type": "boolean",
+      "title": "Runbook memory",
+      "description": "Notice shell commands you repeat and let you save them as scripts with /runbook; matching prompts get a one-line pointer",
+      "default": true
+    },
+    "runbookAfter": {
+      "type": "number",
+      "title": "Offer a runbook after (runs)",
+      "description": "How many times the same command must run before it is offered",
+      "default": 4
+    },
+    "runbookDir": {
+      "type": "string",
+      "title": "Runbook folder",
+      "description": "Where /runbook save writes scripts (blank: .claude/runbooks in your home folder)",
+      "default": ""
+    },
+    "learn": {
+      "type": "boolean",
+      "title": "Learn from outcomes",
+      "description": "Track which model and effort worked for each kind of prompt and move one step on evidence",
+      "default": true
+    },
+    "learnMinSamples": {
+      "type": "number",
+      "title": "Learner minimum samples",
+      "description": "Turns needed at a step before the learner trusts its record",
+      "default": 8
+    },
+    "learnExplore": {
+      "type": "number",
+      "title": "Learner exploration",
+      "description": "Chance (0 to 1) of trying one cheaper step where the current one has worked well",
+      "default": 0.1
+    },
+    "reflect": {
+      "type": "boolean",
+      "title": "Cheap second opinion",
+      "description": "For unclear turns (one or two failed tool calls) ask Haiku whether the request was completed; sends that prompt and the start of the reply",
+      "default": true
+    },
+    "reflectPerDay": {
+      "type": "number",
+      "title": "Second opinions per day",
+      "description": "Upper limit on those Haiku calls per day",
+      "default": 8
     }
   }
 }
