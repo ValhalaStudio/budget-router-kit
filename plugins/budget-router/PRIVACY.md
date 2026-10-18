@@ -33,7 +33,7 @@ It writes a file outside the store only when you run `/runbook save`: one script
 
 ## Sharing counts (optional, only if you choose)
 
-`/budget learn export` prints a summary you can read: turns, successes and cost per model/effort pair and per kind of prompt. It holds no prompt text, folder or project names, dates or feature weights. The plugin never sends it anywhere; if you paste it into a public issue, it is public.
+`/budget learn export` prints a summary you can read: turns, successes and cost per model/effort pair and per kind of prompt. It holds no prompt text, folder or project names, dates or feature weights. The plugin never sends it anywhere; if you paste it into a public issue, it is public. After about 60 learned turns it shows one notice, once, saying this exists; the `inviteContribution` option turns the notice off.
 
 ## Deleting it
 

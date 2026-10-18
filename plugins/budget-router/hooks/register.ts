@@ -104,6 +104,7 @@ type Opts = {
   learnExplore: number
   learnMode: 'live' | 'shadow' | 'classic' | 'off'
   qualityWeight: number
+  invite: boolean
   priceTable?: Record<Family, Price>
   reflect: boolean
   reflectPerDay: number
@@ -252,6 +253,7 @@ function readOptions(options: PluginOptions): Opts {
     learnExplore: num(options.learnExplore, 0.1),
     learnMode: (['live', 'shadow', 'classic', 'off'].includes(str(options.learnMode, 'live')) ? str(options.learnMode, 'live') : 'live') as Opts['learnMode'],
     qualityWeight: num(options.qualityWeight, 0.05),
+    invite: bool(options.inviteContribution, true),
     priceTable: parsePrices(options.priceTable),
     reflect: bool(options.reflect, false),
     reflectPerDay: num(options.reflectPerDay, 8),
@@ -466,7 +468,8 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.0'
+const PLUGIN_VERSION = '0.10.2'
+const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
 let smartPending: SmartPending | undefined
@@ -555,6 +558,11 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
       const cost = u ? turnCostUsd(u.family, u, o.priceTable ? o.priceTable : { ...DEFAULT_PRICES, [u.family]: priceFor(u.model, u.family) }) : 0
       smartLast = { ...sp, ok, at: Date.now() }
       smartData = smartRecord(smartData, { kind: sp.kind, project: sp.project, arm: sp.arm, base: sp.base, x: sp.x, ok, costUsd: cost, now: Date.now() })
+      // One invitation, once, after enough turns to have something worth sharing. Never repeated.
+      if (o.invite && !smartData.invited && smartData.seen >= INVITE_AFTER) {
+        smartData = { ...smartData, invited: true }
+        $.ui.toast(`budget-router has learned from ${smartData.seen} of your turns. If you would like to help it start better for others, /budget learn export prints anonymous counts (no prompts, no names) that you can read and choose to share. This notice shows once; the inviteContribution option turns it off.`, { timeoutMs: 30_000 })
+      }
       await $.store.set(SMART_KEY, smartData)
     } catch {
       // learning is optional

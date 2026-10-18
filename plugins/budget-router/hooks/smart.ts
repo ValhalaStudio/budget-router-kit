@@ -283,6 +283,7 @@ export type SmartStore = {
   cells: Record<string, Record<string, Cell>> // scope key -> arm name -> cell
   explore: { day: string; n: number }
   seen: number
+  invited?: boolean // the one-time invitation to share counts was shown
   saved: number // running USD saved (or spent extra, if negative) versus the rule choice
 }
 

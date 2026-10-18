@@ -2,7 +2,7 @@
 
 Picks the model and effort for every turn, guards a daily usage budget, and learns what is enough for your kind of work.
 
-**Help it learn faster:** if you are willing, share your anonymous learner counts (a short JSON you can read first, no prompts, no names). See [Contribute your counts](#contribute-your-counts-optional) for exactly what is and is not in it.
+**Help it learn faster:** if you are willing, share your anonymous learner counts (a short JSON you can read first, no prompts, no names). See [Contribute your counts](#contribute-your-counts-optional) for exactly what is and is not in it. After about 60 learned turns the plugin shows one notice about this, once; the `inviteContribution` option turns it off.
 
 | Prompt looks like | Runs on |
 |---|---|
@@ -60,10 +60,10 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.1 |
+| budget-router | 0.10.2 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
-| Test suite | 107 tests via `claude plugin test`, plus `claude plugin validate` |
+| Test suite | 109 tests via `claude plugin test`, plus `claude plugin validate` |
 
 Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
 

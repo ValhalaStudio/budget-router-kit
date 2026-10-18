@@ -975,3 +975,36 @@ describe('learner export and context line', () => {
     expect(r.text).toContain('nothing is sent anywhere')
   })
 })
+
+describe('one-time invitation to share counts', () => {
+  test('shown once after enough turns, and not when switched off', { options: { classifier: 'heuristic', paceControl: false } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on, { smart: { v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 59, saved: 0 } })
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async (_$: unknown, e: { text: string }) => {
+      toasts.push(e.text)
+      return { value: undefined } as never
+    })
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    for (let k = 0; k < 4; k++) {
+      await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+      await $.turn.complete({ turnId: `t${k}`, answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+    }
+    expect(toasts.filter(t => t.includes('/budget learn export')).length).toBe(1)
+  })
+  test('the option turns it off', { options: { classifier: 'heuristic', paceControl: false, inviteContribution: false } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on, { smart: { v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 80, saved: 0 } })
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.toast', async (_$: unknown, e: { text: string }) => {
+      toasts.push(e.text)
+      return { value: undefined } as never
+    })
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    await $.turn.complete({ turnId: 't', answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+    expect(toasts.some(t => t.includes('/budget learn export'))).toBe(false)
+  })
+})

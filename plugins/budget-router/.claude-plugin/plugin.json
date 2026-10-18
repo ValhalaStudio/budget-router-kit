@@ -1,12 +1,12 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
   },
-  "description": "Routes each Claude Code prompt to the right model and effort, keeps you inside a daily usage budget, and learns what is enough for your work. Everything stays on your machine; sharing anonymous counts to improve it is optional.",
+  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning before the lock, and learns which cheaper setting is enough for your work. Local only; sharing anonymous counts to help it learn is optional.",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
   "repository": "https://github.com/ValhalaStudio/budget-router-kit",
@@ -276,6 +276,12 @@
       "title": "Learner price table",
       "description": "JSON of USD per million tokens per family, for example {\"opus\":{\"inp\":4,\"out\":20,\"read\":0.2,\"write\":5}}; blank uses list prices by model id",
       "default": ""
+    },
+    "inviteContribution": {
+      "type": "boolean",
+      "title": "One-time invitation to share counts",
+      "description": "After about 60 learned turns, show one notice explaining how to share anonymous counts (never repeated)",
+      "default": true
     },
     "qualityWeight": {
       "type": "number",
