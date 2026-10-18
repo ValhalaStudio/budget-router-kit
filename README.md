@@ -1,6 +1,8 @@
 # budget-router for Claude Code
 
-Picks the model and effort for every turn and guards a daily usage budget.
+Picks the model and effort for every turn, guards a daily usage budget, and learns what is enough for your kind of work.
+
+**Help it learn faster:** if you are willing, share your anonymous learner counts (a short JSON you can read first, no prompts, no names). See [Contribute your counts](#contribute-your-counts-optional) for exactly what is and is not in it.
 
 | Prompt looks like | Runs on |
 |---|---|
@@ -58,7 +60,7 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.0 |
+| budget-router | 0.10.1 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Test suite | 107 tests via `claude plugin test`, plus `claude plugin validate` |
@@ -67,11 +69,25 @@ Not tested by the author: macOS and Linux (the time-zone and project-folder dete
 
 ## Contribute your counts (optional)
 
-The learner starts from my guesses and your own record. If you want to help it start better for everyone:
+The learner starts from my guesses and your own record, and one person's work is not enough to tell which model and effort is enough for which kind of task. **I would be glad if you uploaded your counts**: with a few dozen contributions the shipped starting point gets much better for everyone, including new installs.
 
-1. Use the plugin for a while, then run `/budget learn export`. It prints counts only: turns, successes and cost per model/effort pair and per kind of prompt. No prompt text, folders, project names, dates or feature weights.
-2. Read it. If you are happy to share it, open an issue with the "Contribute your learner counts" template and paste it. Nothing is ever sent by the plugin itself.
-3. `plugins/budget-router/study/aggregate.py` merges contributions into `hooks/prior.ts`. A model/effort cell is only included once at least three different people contributed it, each person counts for at most 60 turns per cell, and a shipped cell counts for at most 4 observations in your learner, so your own record takes over quickly. The prior can shape the odds but never lets the learner step down on its own: that still needs evidence from your own turns.
+**What is in the file**, and nothing else:
+
+| Included | Example |
+|---|---|
+| Plugin version | `"plugin": "0.10.0"` |
+| Total turns the learner has seen | `"turns": 120` |
+| Per model/effort pair: turns, turns that went well, total cost in dollars | `"sonnet·high": {"n": 40, "ok": 37, "usd": 1.9}` |
+| The same per kind of prompt (go, question, change, research, paste, shell, chat, ask) | `"kinds": {"question": {...}}` |
+
+**What is never in it:** your prompts or any text you typed, answers, file names, folder or project names (the learner keeps only a hash of the project folder and the export drops it), timestamps or dates, session ids, your account, plan or limits, the feature weights, or anything about other tools. The export is built from fixed fields in `smart.ts` (`exportContribution`), and a test checks that a project hash and the weights never appear in it.
+
+**How it works**
+
+1. Use the plugin for a while, then run `/budget learn export`. The plugin only prints; it never sends anything.
+2. Read the JSON. It is short. If anything in it looks private to you, do not share it.
+3. To share it, open an issue with the "Contribute your learner counts" template and paste it. A public issue is public: anyone can read and copy it, and deleting it later may not remove copies. Do not upload what you would not post publicly.
+4. `plugins/budget-router/study/aggregate.py` merges contributions into `hooks/prior.ts`. A model/effort cell is only included once at least three different people contributed it, each person counts for at most 60 turns per cell, and a shipped cell counts for at most 4 observations in your learner, so your own record takes over quickly. The prior can shape the odds but never lets the learner step down on its own: that still needs evidence from your own turns.
 
 `/budget` shows whether a shared prior is in use. It is empty until enough people have contributed.
 

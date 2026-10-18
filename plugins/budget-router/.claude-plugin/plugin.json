@@ -1,12 +1,12 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
   },
-  "description": "Routes each Claude Code prompt to the right model and effort, and keeps you inside a daily usage budget.",
+  "description": "Routes each Claude Code prompt to the right model and effort, keeps you inside a daily usage budget, and learns what is enough for your work. Everything stays on your machine; sharing anonymous counts to improve it is optional.",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
   "repository": "https://github.com/ValhalaStudio/budget-router-kit",
