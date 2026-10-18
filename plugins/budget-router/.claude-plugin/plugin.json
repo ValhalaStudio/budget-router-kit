@@ -1,7 +1,7 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
@@ -258,6 +258,18 @@
       "title": "Learn from outcomes",
       "description": "Track which model and effort worked for each kind of prompt and move one step on evidence",
       "default": true
+    },
+    "learnMode": {
+      "type": "string",
+      "title": "Learner mode",
+      "description": "live (cost-aware learner picks the model and effort), shadow (only logs what it would pick), classic (old success-rate learner) or off",
+      "default": "live"
+    },
+    "qualityWeight": {
+      "type": "number",
+      "title": "Learner quality weight",
+      "description": "Dollars of pain assigned to a failed turn while the daily budget is full; shrinks as the budget is used up",
+      "default": 0.05
     },
     "learnMinSamples": {
       "type": "number",

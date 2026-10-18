@@ -18,6 +18,8 @@ import {
 import type { Finding, LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
+import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, turnCostUsd } from './smart'
+import type { SmartStore, Usage } from './smart'
 import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, usd } from './policy'
 import type { CmdStats, Learned, Runbook } from './policy'
 
@@ -97,6 +99,8 @@ type Opts = {
   learn: boolean
   learnMinSamples: number
   learnExplore: number
+  learnMode: 'live' | 'shadow' | 'classic' | 'off'
+  qualityWeight: number
   reflect: boolean
   reflectPerDay: number
 }
@@ -225,6 +229,8 @@ function readOptions(options: PluginOptions): Opts {
     learn: bool(options.learn, true),
     learnMinSamples: num(options.learnMinSamples, 8),
     learnExplore: num(options.learnExplore, 0.1),
+    learnMode: (['live', 'shadow', 'classic', 'off'].includes(str(options.learnMode, 'live')) ? str(options.learnMode, 'live') : 'live') as Opts['learnMode'],
+    qualityWeight: num(options.qualityWeight, 0.05),
     reflect: bool(options.reflect, false),
     reflectPerDay: num(options.reflectPerDay, 8),
   }
@@ -250,7 +256,13 @@ const modelId = (f: Family) => (isAlias(o.models[f]) ? (learned[f] ?? KNOWN_IDS[
 async function learn($: EngineInterface, model: string) {
   const f = familyOf(model)
   if (!/^claude-/.test(model) || learned[f] === model) return
+  const hadOlder = learned[f] !== undefined
   learned = { ...learned, [f]: model }
+  if (hadOlder) {
+    if (!v06Loaded) await loadV06($)
+    smartData = fadeFamily(smartData, f)
+    await $.store.set(SMART_KEY, smartData)
+  }
   await $.store.set(MODELS_KEY, learned)
 }
 
@@ -429,6 +441,23 @@ let idleAskedAt = 0
 let currentBucket = ''
 let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
+// Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
+const SMART_KEY = 'smart'
+let smartData: SmartStore = emptyStore()
+type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
+let smartPending: SmartPending | undefined
+let smartLast: (SmartPending & { ok: boolean; at: number }) | undefined
+let smartProject = 'x'
+let smartX: number[] = []
+let smartText = ''
+let lastTurnUsage: Usage = { inp: 2000, out: 1500, cr: 40000, cc: 3000 }
+const dayKey = () => localDay(Date.now())
+const projectHash = (cwd: string) => {
+  let h = 5381
+  for (let i = 0; i < cwd.length; i++) h = (Math.imul(h, 33) ^ cwd.charCodeAt(i)) >>> 0
+  return cwd === '' ? 'x' : h.toString(36)
+}
+const smartOn = () => o.learn && (o.learnMode === 'live' || o.learnMode === 'shadow')
 
 const SHELLS = new Set(['Bash', 'PowerShell'])
 const plain = (v: string) => v.replace(/[^A-Za-z0-9 .:_/-]/g, '').slice(0, 60)
@@ -441,6 +470,7 @@ async function loadV06($: EngineInterface) {
   cmdStats = ((await $.store.get(CMDS_KEY)) as CmdStats | undefined) ?? {}
   runbooks = ((await $.store.get(BOOK_KEY)) as Runbook[] | undefined) ?? []
   learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
+  smartData = ((await $.store.get(SMART_KEY)) as SmartStore | undefined) ?? emptyStore()
   catalogIndex = undefined
   v06Loaded = true
 }
@@ -470,8 +500,22 @@ async function observeTool($: EngineInterface, e: { tool: string; agentId?: stri
 }
 
 // After each main turn: record how it went for the learner.
-async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }) {
+async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted: boolean }, u?: Usage & { family: Family }) {
   if (!v06Loaded) await loadV06($)
+  if (u) lastTurnUsage = { inp: u.inp, out: u.out, cr: u.cr, cc: u.cc }
+  if (o.learn && smartPending) {
+    const sp = smartPending
+    smartPending = undefined
+    try {
+      const ok = !e.isAborted && turnErrors <= 1
+      const cost = u ? turnCostUsd(u.family, u) : 0
+      smartLast = { ...sp, ok, at: Date.now() }
+      smartData = smartRecord(smartData, { kind: sp.kind, project: sp.project, arm: sp.arm, base: sp.base, x: sp.x, ok, costUsd: cost, now: Date.now() })
+      await $.store.set(SMART_KEY, smartData)
+    } catch {
+      // learning is optional
+    }
+  }
   if (!o.learn || !pending) return
   const done = pending
   pending = undefined
@@ -695,6 +739,12 @@ async function classify($: EngineInterface, raw: string, prev: Tier | undefined)
   return heuristic(text, prev)
 }
 
+let smartDecision: { kind: string; base: number; arm: number; shadowArm: number; why: string; explored: boolean } | undefined
+const pickToSpec = (arm: number): Spec => {
+  const a = ARMS[arm]!
+  return { family: a.family, effort: a.effort } as Spec
+}
+
 function decide(tier: Tier, why: string, p: Pressure): Route {
   const notes = [why]
   let spec = pin?.spec ?? o.tiers[tier]
@@ -713,7 +763,21 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     }
   }
   // The learner: move one rung on evidence from earlier outcomes of this kind of prompt.
-  if (o.learn && !pin && tier !== 'max' && currentBucket !== '') {
+  smartDecision = undefined
+  if (smartOn() && !pin && currentBucket !== '') {
+    const base = armIndex(spec)
+    const kind = currentBucket.split('|')[1] ?? 'general'
+    const now = Date.now()
+    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, rand: Math.random })
+    const live = o.learnMode === 'live'
+    smartDecision = { kind, base, arm: live ? pick.arm : base, shadowArm: pick.arm, why: pick.why, explored: pick.explored && live }
+    if (live && pick.arm !== base) {
+      const a = pickToSpec(pick.arm)
+      spec = a
+      notes.push(pick.why)
+    } else if (!live && pick.arm !== base) notes.push(`shadow: would pick ${armName(pick.arm)}`)
+  }
+  if (o.learn && o.learnMode === 'classic' && !pin && tier !== 'max' && currentBucket !== '') {
     const mv = learnedMove(learnedData, currentBucket, ladderIndex(spec), LADDER_SIZE, { minSamples: o.learnMinSamples, target: 0.85, explore: o.learnExplore, rand: Math.random })
     if (mv) {
       const moved = shiftLadder(spec, mv.steps)
@@ -790,8 +854,12 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
   lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle${o.idleGuard === 'ask' ? '; pauses that prompt once' : ''})`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
   lines.push(`  runbooks: ${!o.runbooks ? 'off' : `${runbooks.length} saved, ${waiting().length} repeated command(s) waiting (/runbook)`}`)
-  if (!o.learn) lines.push('  learner: off')
-  else {
+  if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
+  else if (smartOn()) {
+    const rows = smartSummary(smartData, Date.now())
+    lines.push(`  learner: ${o.learnMode} (cost-aware, ${smartData.seen} turns seen${rows.length === 0 ? ', nothing recorded yet' : ''}; /budget learn for detail)`)
+    lines.push(...rows)
+  } else {
     const rows = learnedSummary(learnedData, rungName)
     lines.push(`  learner: on, success rate per kind of prompt and model step${rows.length === 0 ? ' (no turns recorded yet)' : ':'}`)
     lines.push(...rows)
@@ -826,7 +894,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'budget',
       description: "Show today's Claude usage budget and route; 'unlock' overrides the lock for 1 hour",
-      argumentHint: '[unlock|reset|soft|hard|skills|vet <path>|wipe]',
+      argumentHint: '[unlock|reset|soft|hard|skills|vet <path>|learn [reset|export]|wipe]',
     })
     await $.command.register({
       name: 'route',
@@ -903,8 +971,19 @@ export const register: Register = (on, options) => {
         // keep the last known size
       }
       turnErrors = 0
+      // Follow-ups tell how the last turn went: a redo or a quick rephrase means it missed, thanks means it hit.
+      if (smartOn() && smartLast && now - smartLast.at < 15 * 60_000) {
+        const f = followUp(smartText, e.text, now - smartLast.at, REDO_RE)
+        const toOk = f === 'ack' ? true : f === 'redo' || f === 'rephrase' ? false : undefined
+        if (toOk !== undefined && toOk !== smartLast.ok) {
+          smartData = smartCorrect(smartData, { kind: smartLast.kind, project: smartLast.project, arm: smartLast.arm, base: smartLast.base, x: smartLast.x, toOk })
+          smartLast = { ...smartLast, ok: toOk }
+          await $.store.set(SMART_KEY, smartData)
+        }
+      }
+      smartText = e.text
       // A redo or correction right after a "successful" turn means it was not.
-      if (o.learn && lastOutcome?.ok && now - lastOutcome.at < 15 * 60_000 && REDO_RE.test(e.text)) {
+      if (o.learn && o.learnMode === 'classic' && lastOutcome?.ok && now - lastOutcome.at < 15 * 60_000 && REDO_RE.test(e.text)) {
         learnedData = flipOutcome(learnedData, lastOutcome.bucket, lastOutcome.rung)
         lastOutcome = { ...lastOutcome, ok: false }
         await $.store.set(BANDIT_KEY, learnedData)
@@ -925,7 +1004,13 @@ export const register: Register = (on, options) => {
         c = { tier: 'standard', why: `${c.why}; unreal build text` }
       }
       currentBucket = o.learn ? bucketOf(c.tier, e.text) : ''
+      smartProject = projectHash((e as { cwd?: string }).cwd ?? '')
+      smartX = features(e.text, ctxTokens)
       route = decide(c.tier, c.why, p)
+      if (smartDecision) {
+        smartPending = pin ? undefined : { kind: smartDecision.kind, project: smartProject, arm: smartDecision.arm, base: smartDecision.base, x: smartX, text: e.text.slice(0, 300), shadow: o.learnMode === 'shadow' }
+        if (smartDecision.explored) smartData = noteExplore(smartData, dayKey())
+      }
       pending = o.learn && !pin ? { bucket: currentBucket, rung: route.rung ?? 0, text: e.text.slice(0, 300) } : undefined
       if (route.why.includes('learned')) await addLog($, { t: now, k: 'learn', bucket: currentBucket, why: route.why.split(', ').filter(x => x.startsWith('learned')).join('; ') })
       await addLog($, {
@@ -1036,11 +1121,11 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    const u = r.usage ?? e.usage
     if (e.agentId === undefined) {
       lastMainTurnAt = Date.now()
-      await afterMainTurn($, e)
+      await afterMainTurn($, e, u ? { inp: u.input_tokens, out: u.output_tokens, cr: u.cache_read_input_tokens, cc: u.cache_creation_input_tokens, family: familyOf(u.model) } : undefined)
     }
-    const u = r.usage ?? e.usage
     if (u) {
       await addLog($, {
         t: Date.now(),
@@ -1062,6 +1147,21 @@ export const register: Register = (on, options) => {
     const arg = raw.toLowerCase()
     const now = Date.now()
     const l = await loadLedger($)
+    if (arg === 'learn' || arg.startsWith('learn ')) {
+      if (!v06Loaded) await loadV06($)
+      const sub = arg.slice(5).trim()
+      if (sub === 'reset') {
+        smartData = emptyStore()
+        smartLast = undefined
+        await $.store.delete(SMART_KEY)
+        return { text: 'Smart learner cleared. It starts from the rule choice again.' }
+      }
+      if (sub === 'export') return { text: JSON.stringify({ seen: smartData.seen, cells: smartData.cells }, null, 1) }
+      const rows = smartSummary(smartData, now)
+      const sav = estimateSavings(smartData, now)
+      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints the counts (no prompt text is stored).'].join('
+') }
+    }
     if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
     if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }
     if (arg === 'soft' || arg === 'hard') {
@@ -1082,13 +1182,16 @@ export const register: Register = (on, options) => {
       // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
       // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
       // are left where they are.
-      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, SOFT_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, REFLECT_KEY]) await $.store.delete(key)
+      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, SOFT_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, REFLECT_KEY, SMART_KEY]) await $.store.delete(key)
       learned = {}
       soft = false
       pacerU = 0
       cmdStats = {}
       runbooks = []
       learnedData = {}
+      smartData = emptyStore()
+      smartPending = undefined
+      smartLast = undefined
       pending = undefined
       lastOutcome = undefined
       catalogIndex = undefined
