@@ -1,9 +1,13 @@
 import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
+import { isOffered, parseList, parseSubagentModels, planSpawn, pushLog, summarize } from './policy'
+import type { LogEntry } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
 // what the prompt asks for, and tightens that choice as today's share of the
 // account's usage limits runs down (50% -> first cap, 80% -> second cap,
-// 100% -> new prompts refused until local midnight).
+// 100% -> new prompts refused until local midnight). v0.3 also sets the model
+// of subagents (cheap read-only types on Haiku, no new ones at the lock),
+// can hide agent types once usage is tight, and keeps a decision log.
 
 type Family = 'haiku' | 'sonnet' | 'opus'
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -50,6 +54,9 @@ type Opts = {
   haikuMaxContext: number
   stickyContext: number
   models: Record<Family, string>
+  subagentModels: Record<string, Family>
+  hideAgentsAtCritical: string[]
+  logDecisions: boolean
 }
 
 const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
@@ -96,7 +103,8 @@ One word: TRIVIAL, LIGHT, STANDARD, DEEP or SAME.`
 const GUIDANCE = `The budget-router plugin picks the model and effort for every turn, whatever the system prompt says you run on: trivial → Haiku, light/standard → Sonnet, deep or "think hard" → Opus. It caps turns at 50% and 80% of today's usage budget and refuses prompts at 100%. /budget shows the numbers, /route pins a tier.
 - If a task clearly needs deeper reasoning than this turn can give, say so in one line and suggest /route deep rather than guessing.
 - Spend tokens where they change the outcome: read only the line ranges you need, cap search output, never re-read a file you just edited, keep answers short unless asked for depth.
-- For a broad read-only sweep across many files where only the conclusion matters, delegate it to the budget-router:scout agent (Haiku) so the raw output stays out of this context. Do the work inline when it touches a few known files.`
+- For a broad read-only sweep across many files where only the conclusion matters, delegate it to the budget-router:scout agent (Haiku) so the raw output stays out of this context. Do the work inline when it touches a few known files.
+- Other cheap helpers: budget-router:log-triage (long build, cook, UAT or test logs cut down to their errors), budget-router:disk-auditor (folder sizes, what fills a drive), budget-router:repo-check (git state: unpushed work, worktrees, LFS), and budget-router:reviewer (Sonnet, read-only diff review). Use them only for read-only work; make edits yourself.`
 
 const rankF = (f: Family) => FAMILIES.indexOf(f)
 const rankE = (e: Effort) => EFFORTS.indexOf(e)
@@ -151,6 +159,9 @@ function readOptions(options: PluginOptions): Opts {
       sonnet: str(options.sonnetModel, 'sonnet'),
       opus: str(options.opusModel, 'opus'),
     },
+    subagentModels: parseSubagentModels(options.subagentModels),
+    hideAgentsAtCritical: parseList(options.hideAgentsAtCritical),
+    logDecisions: bool(options.logDecisions, true),
   }
 }
 
@@ -245,6 +256,21 @@ function pressure(l: Ledger | undefined, now: number): Pressure {
 
 const loadLedger = async ($: EngineInterface) => (await $.store.get(STORE_KEY)) as Ledger | undefined
 
+// The decision log: what was routed and why, subagent rules applied, and the
+// tokens each turn used. Kept in the plugin store (newest 200 rows), never sent
+// anywhere. It holds no prompt text.
+const LOG_KEY = 'decisions'
+const loadLog = async ($: EngineInterface) => ((await $.store.get(LOG_KEY)) as LogEntry[] | undefined) ?? []
+
+async function addLog($: EngineInterface, entry: LogEntry) {
+  if (!o.logDecisions) return
+  try {
+    await $.store.set(LOG_KEY, pushLog(await loadLog($), entry))
+  } catch {
+    // logging must never get in the way of the work
+  }
+}
+
 function heuristic(text: string, prev: Tier | undefined): { tier: Tier; why: string } {
   if (DEEP_RE.test(text)) return { tier: 'deep', why: 'keywords' }
   if (text.length < 60 && TRIVIAL_RE.test(text)) return { tier: 'trivial', why: 'keywords' }
@@ -336,6 +362,8 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   lines.push(
     `  route: ${route ? `${route.family}·${route.effort} for a ${route.tier} turn (${route.why})` : 'not chosen yet'}${pin ? ' [pinned: /route auto to release]' : ''}`,
     `  caps: ${o.warnPercent}% → ${o.warnCap.family}·${o.warnCap.effort}, ${o.criticalPercent}% → ${o.criticalCap.family}·${o.criticalCap.effort}, 100% → ${o.lockAtLimit ? 'lock' : 'no lock'}`,
+    `  subagents: ${Object.entries(o.subagentModels).map(([t, f]) => `${t} → ${f}`).join(', ') || 'no model rules'}${o.hideAgentsAtCritical.length > 0 ? `; hidden past ${o.criticalPercent}%: ${o.hideAgentsAtCritical.join(', ')}` : ''}`,
+    `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}`,
   )
   return lines.join('\n')
 }
@@ -372,7 +400,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'route',
       description: 'Pin the model/effort tier for this session, or auto',
-      argumentHint: '[auto|trivial|light|standard|deep|max|haiku|sonnet|opus] [low|medium|high|xhigh|max]',
+      argumentHint: '[why|auto|trivial|light|standard|deep|max|haiku|sonnet|opus] [low|medium|high|xhigh|max]',
     })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
     const p = pressure(await loadLedger($), Date.now())
@@ -426,6 +454,16 @@ export const register: Register = (on, options) => {
       }
       const c = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : await classify($, e.text, route?.tier)
       route = decide(c.tier, c.why, p)
+      await addLog($, {
+        t: now,
+        k: 'prompt',
+        tier: route.tier,
+        why: route.why,
+        model: route.family,
+        effort: route.effort,
+        level: p.level,
+        ctx: ctxTokens,
+      })
     }
     showStatus($, p)
     return next(e)
@@ -454,6 +492,48 @@ export const register: Register = (on, options) => {
     return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
   })
 
+  // A new subagent: no new ones once today's budget is spent (the lock), and
+  // read-only helper types run on a cheap model when the call did not name one.
+  // The per-step cap in turn.step still applies on top of this.
+  on('agent.spawn', async ($, e, next) => {
+    const now = Date.now()
+    const l = await loadLedger($)
+    const p = pressure(l, now)
+    level = p.level
+    if (p.level === 3 && o.lockAtLimit && !((l?.unlockUntil ?? 0) > now)) {
+      await addLog($, { t: now, k: 'spawn', type: e.subagentType, note: 'refused: budget spent', level: p.level })
+      return {
+        deny: `⛔ budget-router: today's Claude budget is spent, so no new subagents until ${clock(nextMidnight(now))} (/budget unlock overrides for 1 hour).`,
+      }
+    }
+    const plan = planSpawn(e, o.subagentModels)
+    await addLog($, { t: now, k: 'spawn', type: e.subagentType, note: plan.note, level: p.level })
+    return plan.model ? next({ ...e, model: o.models[plan.model] }) : next(e)
+  })
+
+  // Past the second cap the model is not offered the types listed in the
+  // hideAgentsAtCritical option (none by default).
+  on('agent.offer', ($, e, next) => (isOffered(e.agent, level, o.hideAgentsAtCritical) ? next(e) : { isOffered: false }))
+
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    const u = r.usage ?? e.usage
+    if (u) {
+      await addLog($, {
+        t: Date.now(),
+        k: 'turn',
+        sub: e.agentId !== undefined,
+        model: u.model,
+        inp: u.input_tokens,
+        out: u.output_tokens,
+        cr: u.cache_read_input_tokens,
+        cc: u.cache_creation_input_tokens,
+        ms: e.durationMs,
+      })
+    }
+    return r
+  })
+
   on('command.run', { command: 'budget' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     const now = Date.now()
@@ -480,6 +560,10 @@ export const register: Register = (on, options) => {
     if (a === '') {
       return { text: report(await loadLedger($), p, Date.now()) }
     }
+    if (a === 'why') {
+      const now = Date.now()
+      return { text: summarize(await loadLog($), nextMidnight(now) - DAY_MS, clock) }
+    }
     if (a === 'auto') {
       pin = undefined
       route = undefined
@@ -491,7 +575,7 @@ export const register: Register = (on, options) => {
       pin = { spec: { family: a as Family, effort } }
       route = decide(route?.tier ?? 'standard', 'pinned', p)
     } else {
-      return { text: 'Usage: /route auto | trivial | light | standard | deep | max | haiku|sonnet|opus [low|medium|high|xhigh|max]' }
+      return { text: 'Usage: /route why | auto | trivial | light | standard | deep | max | haiku|sonnet|opus [low|medium|high|xhigh|max]' }
     }
     showStatus($, p)
     return {

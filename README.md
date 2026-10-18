@@ -50,9 +50,30 @@ claude plugin update budget-router@budget-router-kit
 - `/budget unlock`: lifts the lock for 1 hour
 - `/budget reset`: re-measures today's budget from the next reply
 - `/route deep`, `/route opus xhigh`, `/route sonnet`, `/route auto`: pin a tier or model for this session (caps still apply)
+- `/route why`: the latest routing decisions, the subagent rules that fired, and today's token use with the share of input served from the prompt cache
 - `/config`: thresholds, caps, tier mapping and model ids
 
-It also adds a `budget-router:scout` agent (Haiku, read-only) for broad file searches.
+## Subagents (new in 0.3)
+
+**Model rules.** When the model starts a subagent and its call names no model, the plugin can pick one by agent type. The default sends `Explore`, `claude-code-guide` and `statusline-setup` to Haiku, which is where read-only searching belongs. Forks, resumed agents, teammates and workflow agents are left alone, and a model named in the call always wins. Change the rules in the `subagentModels` option (JSON, `{}` turns them off). The usage caps still apply to every subagent step on top of this.
+
+**The lock covers subagents.** Once today's budget is spent no new subagent starts (`/budget unlock` lifts it for an hour).
+
+**Hiding agent types.** The `hideAgentsAtCritical` option lists agent types (comma separated) that the model is no longer offered once usage passes the second threshold. Empty by default.
+
+**Decision log.** Routing decisions, subagent rules and per-turn token counts are kept in the plugin store (newest 200 rows, no prompt text, never sent anywhere). `/route why` prints them. Turn it off with `logDecisions`.
+
+## Helper agents
+
+All read-only, on cheap models, with short descriptions (about 60 tokens each in every session):
+
+| Agent | Model | For |
+|---|---|---|
+| `budget-router:scout` | Haiku | broad searches across many files |
+| `budget-router:log-triage` | Haiku | cutting a long build, cook, UAT or test log down to its errors |
+| `budget-router:disk-auditor` | Haiku | folder sizes, what fills a drive (measures, never deletes) |
+| `budget-router:repo-check` | Haiku | git state before a cleanup or move: unpushed work, worktrees, LFS |
+| `budget-router:reviewer` | Sonnet | a diff or branch reviewed for real bugs |
 
 ## Remove
 

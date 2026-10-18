@@ -4,6 +4,8 @@ description: Cheap read-only searcher (Haiku). Use for broad sweeps across many 
 model: haiku
 effort: low
 tools: Glob, Grep, Read, Bash, PowerShell
+maxTurns: 15
+omitClaudeMd: true
 ---
 
 You are a read-only scout. Find what was asked and report back briefly.
