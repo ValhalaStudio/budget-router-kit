@@ -232,10 +232,8 @@ export function auditCommands(rows: readonly CmdRow[]): string {
 
 export type Finding = { sev: 'high' | 'medium' | 'low'; what: string }
 
-// This detector spells the fetch tool's name in two pieces, so a plain text scan of this
-// file does not mistake the detector for the thing it looks for.
-const FETCH = ['cu', 'rl'].join('')
-const RUN_REMOTE = new RegExp(/(__F__|wget|Invoke-WebRequest|iwr)[^\n|]{0,200}\|\s*(sh|bash|iex|powershell|pwsh)\b|Invoke-Expression|\biex\b/.source.replace('__F__', FETCH), 'i')
+// Text that pipes into a shell, or evaluates a string, is a red flag wherever it came from.
+const PIPE_TO_SHELL = /\|\s*(sh|bash|zsh|iex|powershell|pwsh)\b|Invoke-Expression|\biex\b/i
 
 /** Static red flags in a skill, agent, command or hook file. Advisory only: it cannot prove a file is safe. */
 export function vetText(text: string): Finding[] {
@@ -244,8 +242,8 @@ export function vetText(text: string): Finding[] {
     if (re.test(text)) out.push({ sev, what })
   }
   add('high', 'tells the model to keep something from you', /do not (tell|mention|inform|reveal)[^.\n]{0,50}(user|human|person)|without (telling|informing) the user|hide this from/i)
-  add('high', 'downloads and runs code', RUN_REMOTE)
-  add('high', 'loads instructions from a URL (they can change after review)', /(fetch|download|load|follow|read)[^.\n]{0,60}(instructions?|prompt|rules)[^.\n]{0,60}https?:\/\//i)
+  add('high', 'pipes text into a shell or evaluates a string', PIPE_TO_SHELL)
+  add('high', 'loads instructions from a URL (they can change after review)', /(load|follow|read)[^.\n]{0,60}(instructions?|prompt|rules)[^.\n]{0,60}https?:\/\//i)
   add('high', 'hidden or direction-changing unicode characters', /[\u200B-\u200F\u2060\uFEFF\u202A-\u202E]/)
   const granted = /^allowed-tools\s*:(.*)$/im.exec(text)?.[1]
   if (granted !== undefined && granted.split(',').some(tok => /^\s*(\*|(Bash|PowerShell|Shell)(\(\*\))?)\s*$/i.test(tok))) {
