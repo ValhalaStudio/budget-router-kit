@@ -49,13 +49,31 @@ Needs Claude Code 2.1.287 or newer and a Claude subscription (Pro or Max). On an
 
 Every setting is a `userConfig` option, shown in `/config`.
 
+## What this mod can decide for you, and what it can send out
+
+This plugin is a mod, so it is worth saying plainly what it can do with that power. Everything here is in `hooks/register.ts`.
+
+**It can refuse or hold, in exactly three cases, and each one is yours to switch off or override:**
+
+| Case | When | Your control |
+|---|---|---|
+| Refuses a prompt (`prompt.submit`) | Only when today's budget share is 100% spent | `/budget unlock` (1 hour), `/budget soft` (never refuse), or `lockAtLimit` off. The message says how. |
+| Refuses a new subagent (`agent.spawn`) | Same condition, same overrides | Same |
+| Holds a prompt once and asks you to resend it (`prompt.submit`) | Only if `idleGuard` is set to `ask` (the default is `warn`, which only shows a notice), after a long pause with a big context | Leave `idleGuard` at `warn` or `off` |
+
+It never blocks, rewrites or delays a tool call, and never changes what you typed. The only thing it can hide is agent types you list yourself in `hideAgentsAtCritical` (empty by default), from the model, once usage is high. Choosing the model and effort for a turn is its purpose, `/route <model>` pins one, and the usage caps still apply on top of a pin.
+
+**It reads local data only as listed above** (the prompt, rate-limit numbers, shell commands to count repeats, a path you give `/budget vet`). It does not read the conversation history, memory, credentials, or any file you did not name.
+
+**It can send data out in two places, both through Claude Code's own model call on your account to Claude Haiku, and nowhere else:** the first 2,000 characters of a prompt to label the task (set `classifier` to `heuristic` to send nothing), and, only if you turn `reflect` on, up to 300 characters of a prompt and 600 of the reply. The plugin makes no network requests of its own, has no server and no telemetry, and fetches no code or instructions. Sharing learner counts happens only if you copy `/budget learn export` into an issue yourself.
+
 ## What each hook decides
 
 | Hook | What it does |
 |---|---|
 | `session.start` | Registers `/budget`, `/route` and `/runbook`, loads saved settings, and learns your time zone offset (the small programs listed above). |
 | `prompt.context` | Adds one short guidance block once per conversation. |
-| `prompt.submit` | Picks the model tier for the turn (rules, then the learner, then pace control, then usage caps). Warns about an expired cache. Refuses the prompt only when today's budget is spent, and not then if you ran `/budget unlock` or `/budget soft` or turned `lockAtLimit` off. May add one hidden hint line. |
+| `prompt.submit` | Picks the model tier for the turn (rules, then the learner, then pace control, then usage caps). Warns about an expired cache. Refuses the prompt only when today's budget is spent, and not then if you ran `/budget unlock` or `/budget soft` or turned `lockAtLimit` off. With `idleGuard` set to `ask` (default `warn`) it holds a prompt once after a long idle pause. May add one hidden hint line. |
 | `turn.step` | Sets model and effort for each request. Subagent requests are only ever lowered when a usage cap applies, never raised. |
 | `turn.complete` | Records token counts in the decision log and records how the turn went for the learner. |
 | `tool.call` | Passes every tool call through unchanged. Counts failed calls since your last prompt and counts repeated shell commands. Never blocks, rewrites or delays a call. |

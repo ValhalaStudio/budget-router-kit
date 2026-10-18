@@ -11,7 +11,7 @@
       "name": "budget-router",
       "source": "./plugins/budget-router",
       "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning before the lock, and learns which cheaper setting is enough for your work. Local only; sharing anonymous counts to help it learn is optional.",
-      "version": "0.10.2"
+      "version": "0.10.3"
     }
   ]
 }

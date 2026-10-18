@@ -60,7 +60,7 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.2 |
+| budget-router | 0.10.3 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Test suite | 109 tests via `claude plugin test`, plus `claude plugin validate` |

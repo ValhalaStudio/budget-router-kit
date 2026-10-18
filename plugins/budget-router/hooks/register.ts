@@ -468,7 +468,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.2'
+const PLUGIN_VERSION = '0.10.3'
 const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
