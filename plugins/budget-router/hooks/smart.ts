@@ -5,7 +5,11 @@ import type { Family } from './policy'
 
 export type Arm = { family: Family; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 
-/** Cheapest to dearest. The order is the cost order the window and the prior lean on. */
+/**
+ * Cheapest to dearest by expected cost of a typical turn (price x output multiplier of the effort).
+ * Opus 5.5 and Sonnet 5.5 are close in price, so their efforts interleave: opus·low costs about
+ * what sonnet·high does, opus·medium about what sonnet·xhigh does.
+ */
 export const ARMS: readonly Arm[] = [
   { family: 'haiku', effort: 'low' },
   { family: 'haiku', effort: 'medium' },
@@ -13,8 +17,10 @@ export const ARMS: readonly Arm[] = [
   { family: 'sonnet', effort: 'low' },
   { family: 'sonnet', effort: 'medium' },
   { family: 'sonnet', effort: 'high' },
+  { family: 'opus', effort: 'low' },
   { family: 'sonnet', effort: 'xhigh' },
   { family: 'opus', effort: 'medium' },
+  { family: 'sonnet', effort: 'max' },
   { family: 'opus', effort: 'high' },
   { family: 'opus', effort: 'xhigh' },
   { family: 'opus', effort: 'max' },
@@ -91,7 +97,7 @@ const logit = (p: number) => Math.log(p / (1 - p))
 
 /** Prior chance an arm does the job: the rule-based pick works 85% of the time, each cheaper step costs a bit. */
 export function priorP(w: Weights, x: readonly number[], arm: number, base: number, target = 0.85): number {
-  let z = logit(target) + 0.8 * (arm - base)
+  let z = logit(target) + 0.6 * (arm - base)
   for (const i of x) z += w[i] ?? 0
   return Math.min(0.99, Math.max(0.02, sigmoid(z)))
 }

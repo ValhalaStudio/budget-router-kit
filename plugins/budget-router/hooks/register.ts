@@ -120,7 +120,7 @@ const MODELS_KEY = 'models'
 // turn.step takes full model ids, not aliases. These are the current ones;
 // ids seen on real requests (the session's model, a subagent's) replace them.
 const KNOWN_IDS: Record<Family, string> = {
-  haiku: 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-5-5', // $0.10/$0.50 up to a 100K prompt; 4.5 was $1/$5
   sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
 }
@@ -218,7 +218,7 @@ function readOptions(options: PluginOptions): Opts {
     criticalCap: parseSpec(options.criticalCap, { family: 'haiku', effort: 'medium' }),
     lockAtLimit: bool(options.lockAtLimit, true),
     includeFiveHour: bool(options.includeFiveHour, true),
-    haikuMaxContext: num(options.haikuMaxContext, 120_000),
+    haikuMaxContext: num(options.haikuMaxContext, 100_000),
     stickyContext: num(options.stickyContext, 60_000),
     models: {
       haiku: str(options.haikuModel, 'haiku'),

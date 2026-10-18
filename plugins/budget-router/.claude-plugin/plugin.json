@@ -1,7 +1,7 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
@@ -106,8 +106,8 @@
     "haikuMaxContext": {
       "type": "number",
       "title": "Haiku context ceiling (tokens)",
-      "description": "Above this conversation size Haiku is never chosen (its window is 200k)",
-      "default": 120000
+      "description": "Above this conversation size Haiku is never chosen (Haiku 5.5 is priced at its low rate up to a 100k prompt)",
+      "default": 100000
     },
     "stickyContext": {
       "type": "number",

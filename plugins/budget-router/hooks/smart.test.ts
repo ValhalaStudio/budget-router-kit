@@ -16,8 +16,8 @@ describe('cells', () => {
     const c = addToCell(undefined, 1, true, 1)
     expect(Math.abs(decayed(c, 1 + 14 * 24 * 3600_000).s - 0.5) < 1e-6).toBe(true)
   })
-  test('armIndex maps unknown efforts down', () => {
-    expect(armName(armIndex({ family: 'opus', effort: 'low' }))).toBe('opus·medium')
+  test('armIndex maps unavailable efforts down', () => {
+    expect(armName(armIndex({ family: 'haiku', effort: 'max' }))).toBe('haiku·high')
   })
 })
 
@@ -126,5 +126,18 @@ describe('savings tally', () => {
     for (let i = 0; i < 4; i++) s = record(s, { kind: 'k', project: 'p', arm: base, base, x: [], ok: true, costUsd: 0.10, now: 1 })
     s = record(s, { kind: 'k', project: 'p', arm: base - 1, base, x: [], ok: true, costUsd: 0.04, now: 1 })
     expect(Math.abs((s.saved ?? 0) - 0.06) < 1e-9).toBe(true)
+  })
+})
+
+describe('the wider grid', () => {
+  test('every arm maps back to itself', () => {
+    ARMS.forEach((a, i) => expect(armIndex(a)).toBe(i))
+  })
+  test('opus·low and sonnet·max exist and cost sits in order', () => {
+    expect(ARMS.some(a => a.family === 'opus' && a.effort === 'low')).toBe(true)
+    expect(ARMS.some(a => a.family === 'sonnet' && a.effort === 'max')).toBe(true)
+    const mult = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.9, max: 2.6 }
+    const c = ARMS.map(a => turnCostUsd(a.family, { inp: 0, out: 1000, cr: 0, cc: 0 }) * mult[a.effort])
+    for (let i = 1; i < c.length; i++) expect(c[i]! >= c[i - 1]! - 1e-9).toBe(true)
   })
 })
