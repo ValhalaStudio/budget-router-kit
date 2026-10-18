@@ -37,6 +37,34 @@ From a downloaded copy instead, pass the folder path to the first command: `clau
 
 Then start a new session with plain `claude`. No flags or settings are needed. Inside it, type `/budget`: it should print today's numbers, and the status line under the prompt shows the route. A Claude session that was already open when you installed needs a restart (or `/reload-plugins`).
 
+## How it differs from other tools
+
+Written from the projects' public READMEs on 2026-10-18; corrections welcome as issues.
+
+| Kind of tool | Examples | What they do | What budget-router adds |
+|---|---|---|---|
+| Usage gauges and status lines | claude-hud, ccusage, ccstatusline | Show how much you have used | Acts on it: picks the model and effort per turn and enforces a daily share of the weekly limit |
+| Pacing hooks | claude-pacer | Status line plus a wrap-up warning near the limit | Routes and caps turns as the day fills, and learns which model and effort is enough for your work |
+| Recommenders | FlintRelay | Suggests a model, with a shadow mode | Applies the choice (and has its own `shadow` mode for the learner) |
+| Routers with a proof ledger | nobodyohm router | Routes and reports statistics | Ties routing to the real subscription limit; the learner weighs cost against a failure risk that grows as the budget shrinks |
+| Proxies | ccrouter | Sit in front of the API and route requests | Runs as a plugin inside Claude Code, no proxy or API key; stores no prompt text |
+
+What no other tool I found does: treat the weekly limit as a daily budget, and let that budget decide how cautious the model choice is.
+
+Limits to know about: it only guards Claude Code (not claude.ai chat), and the daily budget needs a subscription's rate-limit readings.
+
+## Tested with
+
+| Component | Version |
+|---|---|
+| Claude Code | 2.1.302 (minimum supported 2.1.286) |
+| budget-router | 0.9.0 |
+| OS | Windows 11 |
+| Plan | Claude subscription with 5-hour and weekly limits |
+| Test suite | 97 tests via `claude plugin test`, plus `claude plugin validate` |
+
+Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
+
 ## Update
 
 ```
