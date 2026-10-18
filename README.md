@@ -63,6 +63,16 @@ claude plugin update budget-router@budget-router-kit
 
 **Decision log.** Routing decisions, subagent rules and per-turn token counts are kept in the plugin store (newest 200 rows, no prompt text, never sent anywhere). `/route why` prints them. Turn it off with `logDecisions`.
 
+## More in 0.4
+
+- **Unreal rules.** A prompt about UBT, UHT, linker (`LNK`), `error C####`, cook or packaging failures never runs on the trivial or light tier. The model is also told, in one hidden line, to let `log-triage` cut a long log down first. Epic's `execute_tool_script` (arbitrary Python inside the editor) always asks you, even in permissive permission modes (`askBeforeUnrealScripts`).
+- **Helper-agent hints.** A prompt that fits a helper (a size survey, a pre-delete repo check, a diff review, a wide search) gets one hidden line suggesting it. It is decided by keywords, costs no model call, and `/route why` shows how many hints were given and how many were followed.
+- **Cache-aware switching.** The "stay on the same model in a long conversation" rule now lapses once the cache has gone cold (`cacheWarmMinutes`, 55 by default), because switching is then free.
+- **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.
+- **Soft lock.** `/budget soft` stops the refusals at 100%: turns stay at the second cap instead. `/budget hard` brings the refusals back. For a real limit, add Claude Code's own `autoContinueAtUsageLimit` setting so a session waits for the reset.
+- **`/budget skills`** lists what the command and skill list costs (names plus descriptions, in estimated tokens, by plugin) and the longest descriptions.
+- **`/budget vet <path>`** reads a skill, agent, command or plugin folder before you install it and flags red flags: hidden instructions, `curl | bash`, broad `allowed-tools`, hooks, encoded blobs, data sent out, hidden unicode. It is advisory only: read everything yourself.
+
 ## Helper agents
 
 All read-only, on cheap models, with short descriptions (about 60 tokens each in every session):

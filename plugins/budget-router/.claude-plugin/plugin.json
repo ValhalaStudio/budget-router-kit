@@ -1,10 +1,10 @@
 {
   "name": "budget-router",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "ValhalaStudio"
   },
-  "description": "Routes each turn to the cheapest adequate model/effort, tightens caps at 50%/80% of today's usage budget, locks Claude Code at 100%, sets subagent models, and keeps a decision log",
+  "description": "Routes each turn to the cheapest adequate model/effort, caps at 50%/80% of today's usage budget and locks at 100% (or stays soft), sets subagent models, suggests cheap helper agents, guards Unreal editor scripts, keeps a decision log",
   "userConfig": {
     "classifier": {
       "type": "string",
@@ -129,6 +129,36 @@
       "title": "Keep a decision log",
       "description": "Store routing decisions, subagent rules and per-turn token use (no prompt text) for /route why",
       "default": true
+    },
+    "agentHints": {
+      "type": "boolean",
+      "title": "Suggest helper agents",
+      "description": "Add a one-line hint (log-triage, disk-auditor, repo-check, reviewer, scout) to prompts that fit them. Decided by keywords, no model call.",
+      "default": true
+    },
+    "unrealRules": {
+      "type": "boolean",
+      "title": "Unreal build rules",
+      "description": "Prompts about UBT, linker, cook or packaging errors never run on the trivial or light tier",
+      "default": true
+    },
+    "askBeforeUnrealScripts": {
+      "type": "boolean",
+      "title": "Ask before Unreal editor scripts",
+      "description": "Always put Epic's execute_tool_script (arbitrary Python in the editor) to you, even in permissive modes",
+      "default": true
+    },
+    "cacheWarmMinutes": {
+      "type": "number",
+      "title": "Prompt cache warm for (minutes)",
+      "description": "A model switch on a long conversation is only avoided while the last turn ended less than this long ago (the cache lives about an hour on a subscription)",
+      "default": 55
+    },
+    "paceWarnHours": {
+      "type": "number",
+      "title": "Pace warning horizon (hours)",
+      "description": "Warn once a day when the last 90 minutes' pace would use up today's budget within this many hours",
+      "default": 3
     }
   }
 }
