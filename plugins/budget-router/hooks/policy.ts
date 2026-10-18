@@ -229,7 +229,7 @@ export function auditCommands(rows: readonly CmdRow[]): string {
   for (const r of [...own].sort((a, b) => b.description.length - a.description.length).slice(0, 8)) {
     lines.push(`    ${r.name} (${r.plugin ?? r.source}): ${r.description.length} chars, ~${estimateTokens(r.description.length)} tokens`)
   }
-  lines.push('  To trim: disable what you do not use (/plugin), or list a skill under skillOverrides as name-only.')
+  lines.push('  To trim: plugin skills and commands are switched off in /plugin (a whole plugin at once); your own skills can be set to name-only or off in /skills (skillOverrides does not apply to plugin skills).')
   return lines.join('\n')
 }
 

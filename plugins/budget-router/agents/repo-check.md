@@ -1,6 +1,6 @@
 ---
 name: repo-check
-description: Use to report a git repo's state before cleanup or a move: uncommitted files, unpushed commits and branches, stashes, worktrees, LFS. Read-only git only.
+description: Use to report a git repo's state before cleanup or a move (uncommitted files, unpushed commits and branches, stashes, worktrees, LFS). Read-only git only.
 model: haiku
 effort: low
 tools: Read, Grep, Glob, Bash, PowerShell
