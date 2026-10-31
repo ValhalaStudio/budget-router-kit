@@ -62,7 +62,6 @@ type Pressure = {
 }
 
 type Opts = {
-  classifier: string
   tiers: Record<Tier, Spec>
   warnPercent: number
   wrapUpPercent: number
@@ -124,24 +123,7 @@ const TRIVIAL_RE = /^\s*(hi|hello|hey|thanks?|thank you|ty|cool|nice|great|ευ�
 const DEEP_RE =
   /\b(architect\w*|design|refactor\w*|security|vulnerab\w*|root cause|investigat\w*|race condition|deadlock|memory leak|performance|optimi[sz]\w*|migrat\w*|research|trade-?offs?|strategy|audit|bypass)\b/i
 
-const CLASSIFY_SYSTEM =
-  "You choose the cheapest model tier that can handle a coding assistant's next turn well. Reply with exactly one word."
-
-const classifyPrompt = (text: string, prev: Tier | undefined) => `Tiers:
-TRIVIAL: greeting, thanks, yes/no, a quick fact or definition, one obvious command, a tiny wording change.
-LIGHT: a small, fully specified edit or shell task; a short summary; finding something in files; formatting.
-STANDARD: normal coding, debugging, configuration or writing work; multi-step tasks; reviewing code.
-DEEP: design or architecture, hard or vague bugs, large refactors, security, performance, research with tradeoffs, risky or destructive operations.
-SAME: a short continuation of the previous task ("ok", "continue", "do it", "yes go ahead"). Previous tier: ${prev ?? 'none'}.
-When unsure between two tiers, pick the higher one.
-
-User message:
-<<<
-${text.slice(0, 2000)}
->>>
-One word: TRIVIAL, LIGHT, STANDARD, DEEP or SAME.`
-
-const GUIDANCE = `The budget-router plugin picks the model and effort for every turn, whatever the system prompt says you run on: trivial → Haiku, light/standard → Sonnet, deep or "think hard" → Opus. It caps turns at 50% and 80% of today's usage budget and refuses prompts at 100%. /budget shows the numbers, /route pins a tier.
+const GUIDANCE = `The budget-router plugin picks the model and effort for every turn, whatever the system prompt says you run on: trivial → Haiku, light/standard → Sonnet, deep or "think hard" → Opus. It caps turns at 50% and 80% of today's usage budget and never refuses a prompt. /budget shows the numbers, /route pins a tier.
 - If a task clearly needs deeper reasoning than this turn can give, say so in one line and suggest /route deep rather than guessing.
 - Spend tokens where they change the outcome: read only the line ranges you need, cap search output, never re-read a file you just edited, keep answers short unless asked for depth.
 - For a broad read-only sweep across many files where only the conclusion matters, delegate it to the budget-router:scout agent (Haiku) so the raw output stays out of this context. Do the work inline when it touches a few known files.
@@ -195,7 +177,6 @@ function parsePrices(raw: unknown): Record<Family, Price> | undefined {
 
 function readOptions(options: PluginOptions): Opts {
   return {
-    classifier: str(options.classifier, 'heuristic'),
     tiers: {
       trivial: parseSpec(options.tierTrivial, { family: 'haiku', effort: 'low' }),
       light: parseSpec(options.tierLight, { family: 'sonnet', effort: 'low' }),
@@ -250,6 +231,7 @@ function readOptions(options: PluginOptions): Opts {
 let o: Opts = readOptions({})
 let route: Route | undefined
 let pin: Pin | undefined
+let armed: { name: string; args: string } | undefined
 let ctxTokens = 0
 let level: Pressure['level'] = 0
 let tzMin = -new Date().getTimezoneOffset()
@@ -449,7 +431,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.4'
+const PLUGIN_VERSION = '0.10.5'
 const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
@@ -469,7 +451,7 @@ const projectHash = (cwd: string) => {
   for (let i = 0; i < cwd.length; i++) h = (Math.imul(h, 33) ^ cwd.charCodeAt(i)) >>> 0
   return cwd === '' ? 'x' : h.toString(36)
 }
-// The hook event carries no working directory, but a spawned process starts in the project folder.
+// The project folder, hashed, from the session's own working directory.
 function setProject(dir: string) {
   if (dir === '') return false
   smartProject = projectHash(dir.toLowerCase())
@@ -477,12 +459,7 @@ function setProject(dir: string) {
 }
 async function detectProject($: EngineInterface) {
   try {
-    if (setProject((await $.process.run(['pwd'], { timeoutMs: 8000 })).stdout.trim())) return
-  } catch {
-    // try PowerShell
-  }
-  try {
-    setProject((await $.process.run(['powershell', '-NoProfile', '-Command', '(Get-Location).Path'], { timeoutMs: 8000 })).stdout.trim())
+    setProject(await $.session.cwd())
   } catch {
     // no project hash
   }
@@ -700,27 +677,10 @@ function heuristic(text: string, prev: Tier | undefined): { tier: Tier; why: str
   return { tier: prev && prev !== 'trivial' ? prev : 'standard', why: 'default' }
 }
 
-async function classify($: EngineInterface, raw: string, prev: Tier | undefined) {
+function classify(raw: string, prev: Tier | undefined) {
   const text = raw.trim()
   if (MAX_RE.test(text)) return { tier: 'max' as Tier, why: 'asked to think hard' }
   if (CONTINUE_RE.test(text)) return { tier: prev ?? 'standard', why: 'continuation' }
-  if (o.classifier === 'haiku') {
-    try {
-      const r = await $.model.complete({
-        model: o.models.haiku,
-        system: CLASSIFY_SYSTEM,
-        prompt: classifyPrompt(text, prev),
-        maxTokens: 16,
-        effort: 'low',
-        timeoutMs: 6000,
-      })
-      const word = r.isAnswered ? r.text.toUpperCase().match(/TRIVIAL|LIGHT|STANDARD|DEEP|SAME/)?.[0] : undefined
-      if (word === 'SAME') return { tier: prev ?? 'standard', why: 'classifier: same' }
-      if (word) return { tier: word.toLowerCase() as Tier, why: 'classifier' }
-    } catch {
-      // fall through to the keyword rules
-    }
-  }
   return heuristic(text, prev)
 }
 
@@ -879,41 +839,25 @@ export const register: Register = (on, options) => {
   o = readOptions(options)
 
   on('session.start', async ($, e, next) => {
-    if (tzMin === 0) {
-      // The hooks environment may run in UTC; ask the OS for the real offset
-      // (`date` on macOS/Linux, PowerShell on Windows).
-      try {
-        const r = await $.process.run(['date', '+%z'], { timeoutMs: 5000 })
-        const m = r.stdout.trim().match(/^([+-])(\d{2})(\d{2})$/)
-        if (m) tzMin = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]))
-      } catch {
-        try {
-          const r = await $.process.run(
-            ['powershell', '-NoProfile', '-Command', '[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes'],
-            { timeoutMs: 8000 },
-          )
-          const n = Number(r.stdout.trim())
-          if (r.stdout.trim() !== '' && Number.isFinite(n)) tzMin = n
-        } catch {
-          // keep UTC
-        }
-      }
-    }
     await detectProject($)
-    await $.command.register({
+    const argsSchema = { type: 'object', properties: { args: { type: 'string', description: 'Everything the person typed after the command name, as typed; empty when nothing.' } } }
+    await $.tool.register({
       name: 'budget',
-      description: "Show today's Claude usage budget and route",
-      argumentHint: '[reset|skills|vet <path>|learn [reset|export]|wipe]',
+      description: "Backs the /budget command: today's usage budget and route, /budget learn [reset|export], skills, vet <path>, reset, wipe. Returns the text to show the person.",
+      inputSchema: argsSchema,
+      isDeferred: false,
     })
-    await $.command.register({
+    await $.tool.register({
       name: 'route',
-      description: 'Pin the model/effort tier for this session, or auto',
-      argumentHint: '[why|auto|trivial|light|standard|deep|max|haiku|sonnet|opus] [low|medium|high|xhigh|max]',
+      description: 'Backs the /route command: pin the model/effort tier for this session, or auto; /route why lists recent decisions. Returns the text to show the person.',
+      inputSchema: argsSchema,
+      isDeferred: false,
     })
-    await $.command.register({
+    await $.tool.register({
       name: 'runbook',
-      description: 'Save commands you keep repeating as scripts, and list them',
-      argumentHint: '[list|save [#n] [name]|forget <name>|ignore]',
+      description: 'Backs the /runbook command: list, save a repeated command as a script to print, forget, ignore. Returns the text to show the person.',
+      inputSchema: argsSchema,
+      isDeferred: false,
     })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
     const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
@@ -975,7 +919,11 @@ export const register: Register = (on, options) => {
     const p = pressure(l, now)
     level = p.level
     if (!v06Loaded) await loadV06($)
-    const isOwnCommand = /^\s*\/(budget|route|runbook)\b/.test(e.text)
+    const isOwnCommand = /^\s*\/(budget-router:)?(budget|route|runbook)\b/.test(e.text)
+    // The command tools answer only a command the person typed, with the arguments they typed: a tool call
+    // the model makes on its own (say, after reading a hostile file) finds nothing armed and is refused.
+    const typed = e.command?.name.match(/^(?:budget-router:)?(budget|route|runbook)$/)?.[1]
+    armed = typed !== undefined && e.turnId === undefined && e.agentId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) ? { name: typed, args: e.command?.args ?? '' } : undefined
     let extra: string[] = []
     // A prompt typed into a running turn rides that turn's model.
     if (e.turnId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !isOwnCommand) {
@@ -1008,7 +956,7 @@ export const register: Register = (on, options) => {
         await addLog($, { t: now, k: 'idle', ctx: idle.ctx, usd: Math.round(idle.rebuildUsd * 100) / 100 })
         $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
       }
-      let c: { tier: Tier; why: string } = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : await classify($, e.text, route?.tier)
+      let c: { tier: Tier; why: string } = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : classify(e.text, route?.tier)
       // Build, link and cook errors need more than the cheapest tier.
       if (o.unrealRules && !pin && isUnrealBuildPrompt(e.text) && (c.tier === 'trivial' || c.tier === 'light')) {
         c = { tier: 'standard', why: `${c.why}; unreal build text` }
@@ -1113,6 +1061,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) armed = undefined // a typed command is good for the one turn it starts
     const r = await next(e)
     const u = r.usage ?? e.usage
     if (e.agentId === undefined) {
@@ -1135,91 +1084,127 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  on('command.run', { command: 'budget' }, async ($, e) => {
-    const raw = e.args.trim()
-    const arg = raw.toLowerCase()
-    const now = Date.now()
-    const l = await loadLedger($)
-    if (arg === 'learn' || arg.startsWith('learn ')) {
-      if (!v06Loaded) await loadV06($)
-      const sub = arg.slice(5).trim()
-      if (sub === 'reset') {
-        smartData = emptyStore()
-        smartLast = undefined
-        await $.store.delete(SMART_KEY)
-        return { text: 'Smart learner cleared. It starts from the rule choice again.' }
-      }
-      if (sub === 'export') {
-        const c = exportContribution(smartData, PLUGIN_VERSION, now)
-        return { text: ['Learner counts, ready to share if you choose to (nothing is sent anywhere by this plugin). Only turn counts, successes and cost per model/effort and kind of prompt: no prompt text, folders, project names or dates. See README, "Contribute your counts".', JSON.stringify(c, null, 1)].join('\n') }
-      }
-      const rows = smartSummary(smartData, now)
-      const sav = estimateSavings(smartData)
-      return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints counts you can choose to share (no prompt text is stored).'].join('\n') }
+  // The slash commands are markdown files (commands/*.md) that call these three tools, so no command.run
+  // hook is needed: the tools answer, the engine's commands are left alone.
+  const COMMAND_TOOLS = /^mcp__budget.router__(budget|route|runbook)$/
+  on('tool.call', { tool: COMMAND_TOOLS }, async ($, e) => {
+    const which = /(budget|route|runbook)$/.exec(e.tool)?.[1]
+    const mine = e.agentId === undefined ? armed : undefined
+    if (e.agentId === undefined) armed = undefined
+    if (mine === undefined || mine.name !== which) {
+      return { result: `budget-router: /budget-router:${which} only runs when the person types it; nothing was done.` }
     }
-    if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
-    if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }
-    if (arg === 'wipe') {
-      // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
-      // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
-      // are left where they are.
-      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
-      learned = {}
-      pacerU = 0
-      cmdStats = {}
-      runbooks = []
-      learnedData = {}
+    const args = mine.args
+    const r = which === 'budget' ? await budgetCommand($, args) : which === 'route' ? await routeCommand($, args) : { text: await runbookCommand($, args) }
+    // The person reads the exact text as transcript lines (the terminal draws 2000 characters of a line, so
+    // long text goes in pieces); the model only has to say it is done, so nothing is reworded or cut.
+    for (const piece of pieces(r.text)) $.ui.log(piece)
+    return { result: r.text }
+  }).catch(() => ({ result: 'budget-router: that command failed; nothing was changed.' }))
+}
+
+/** Splits text at line breaks into pieces of at most `max` characters (a longer single line is cut). */
+function pieces(text: string, max = 1800): string[] {
+  const out: string[] = []
+  let cur = ''
+  for (const line of text.split('\n')) {
+    if (cur !== '' && cur.length + line.length + 1 > max) {
+      out.push(cur)
+      cur = ''
+    }
+    cur = cur === '' ? line : `${cur}\n${line}`
+    while (cur.length > max) {
+      out.push(cur.slice(0, max))
+      cur = cur.slice(max)
+    }
+  }
+  if (cur !== '') out.push(cur)
+  return out
+}
+
+async function budgetCommand($: EngineInterface, args: string): Promise<{ text: string }> {
+  const raw = args.trim()
+  const arg = raw.toLowerCase()
+  const now = Date.now()
+  const l = await loadLedger($)
+  if (arg === 'learn' || arg.startsWith('learn ')) {
+    if (!v06Loaded) await loadV06($)
+    const sub = arg.slice(5).trim()
+    if (sub === 'reset') {
       smartData = emptyStore()
-      smartPending = undefined
       smartLast = undefined
-      pending = undefined
-      lastOutcome = undefined
-      catalogIndex = undefined
-      level = 0
-      showStatus($, pressure(undefined, now))
-      return { text: 'Everything budget-router had stored is deleted. Scripts saved with /runbook were left in place (see /runbook list before you forget them).' }
+      await $.store.delete(SMART_KEY)
+      return { text: 'Smart learner cleared. It starts from the rule choice again.' }
     }
-    if (arg === 'reset') {
-      await $.store.delete(STORE_KEY)
-      level = 0
-      showStatus($, pressure(undefined, now))
-      return { text: "Budget ledger cleared; today's budget re-baselines on the next reply." }
+    if (sub === 'export') {
+      const c = exportContribution(smartData, PLUGIN_VERSION, now)
+      return { text: ['Learner counts, ready to share if you choose to (nothing is sent anywhere by this plugin). Only turn counts, successes and cost per model/effort and kind of prompt: no prompt text, folders, project names or dates. See README, "Contribute your counts".', JSON.stringify(c, null, 1)].join('\n') }
     }
-    const p = pressure(l, now)
-    showStatus($, p)
-    return { text: report(l, p, now) }
-  })
+    const rows = smartSummary(smartData, now)
+    const sav = estimateSavings(smartData)
+    return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints counts you can choose to share (no prompt text is stored).'].join('\n') }
+  }
+  if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
+  if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }
+  if (arg === 'wipe') {
+    // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
+    // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
+    // are left where they are.
+    for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
+    learned = {}
+    pacerU = 0
+    cmdStats = {}
+    runbooks = []
+    learnedData = {}
+    smartData = emptyStore()
+    smartPending = undefined
+    smartLast = undefined
+    pending = undefined
+    lastOutcome = undefined
+    catalogIndex = undefined
+    level = 0
+    showStatus($, pressure(undefined, now))
+    return { text: 'Everything budget-router had stored is deleted. Scripts saved with /runbook were left in place (see /runbook list before you forget them).' }
+  }
+  if (arg === 'reset') {
+    await $.store.delete(STORE_KEY)
+    level = 0
+    showStatus($, pressure(undefined, now))
+    return { text: "Budget ledger cleared; today's budget re-baselines on the next reply." }
+  }
+  const p = pressure(l, now)
+  showStatus($, p)
+  return { text: report(l, p, now) }
+}
 
-  on('command.run', { command: 'runbook' }, async ($, e) => ({ text: await runbookCommand($, e.args) }))
 
-  on('command.run', { command: 'route' }, async ($, e) => {
-    const [a = '', b = ''] = e.args.trim().toLowerCase().split(/\s+/)
-    const p = pressure(await loadLedger($), Date.now())
-    if (a === '') {
-      return { text: report(await loadLedger($), p, Date.now()) }
-    }
-    if (a === 'why') {
-      const now = Date.now()
-      return { text: summarize(await loadLog($), nextMidnight(now) - DAY_MS, clock) }
-    }
-    if (a === 'auto') {
-      pin = undefined
-      route = undefined
-    } else if (TIERS.includes(a as Tier)) {
-      pin = { tier: a as Tier }
-      route = decide(a as Tier, 'pinned', p)
-    } else if (FAMILIES.includes(a as Family)) {
-      const effort = EFFORTS.includes(b as Effort) ? (b as Effort) : 'high'
-      pin = { spec: { family: a as Family, effort } }
-      route = decide(route?.tier ?? 'standard', 'pinned', p)
-    } else {
-      return { text: 'Usage: /route why | auto | trivial | light | standard | deep | max | haiku|sonnet|opus [low|medium|high|xhigh|max]' }
-    }
-    showStatus($, p)
-    return {
-      text: pin
-        ? `Pinned to ${route?.family}·${route?.effort} for this session (budget caps still apply). /route auto releases it.`
-        : 'Routing is automatic again.',
-    }
-  })
+async function routeCommand($: EngineInterface, args: string): Promise<{ text: string }> {
+  const [a = '', b = ''] = args.trim().toLowerCase().split(/\s+/)
+  const p = pressure(await loadLedger($), Date.now())
+  if (a === '') {
+    return { text: report(await loadLedger($), p, Date.now()) }
+  }
+  if (a === 'why') {
+    const now = Date.now()
+    return { text: summarize(await loadLog($), nextMidnight(now) - DAY_MS, clock) }
+  }
+  if (a === 'auto') {
+    pin = undefined
+    route = undefined
+  } else if (TIERS.includes(a as Tier)) {
+    pin = { tier: a as Tier }
+    route = decide(a as Tier, 'pinned', p)
+  } else if (FAMILIES.includes(a as Family)) {
+    const effort = EFFORTS.includes(b as Effort) ? (b as Effort) : 'high'
+    pin = { spec: { family: a as Family, effort } }
+    route = decide(route?.tier ?? 'standard', 'pinned', p)
+  } else {
+    return { text: 'Usage: /route why | auto | trivial | light | standard | deep | max | haiku|sonnet|opus [low|medium|high|xhigh|max]' }
+  }
+  showStatus($, p)
+  return {
+    text: pin
+      ? `Pinned to ${route?.family}·${route?.effort} for this session (budget caps still apply). /route auto releases it.`
+      : 'Routing is automatic again.',
+  }
 }

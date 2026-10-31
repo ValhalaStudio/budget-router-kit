@@ -1,12 +1,11 @@
 {
   "name": "budget-router",
-  "displayName": "Budget Router",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
   },
-  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning, and learns which cheaper setting is enough for your work. Sends nothing by default, never blocks a prompt, a tool call or a subagent, and writes no files.",
+  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning, and learns which cheaper setting is enough for your work. Sends nothing, runs no programs, never blocks a prompt, a tool call or a subagent, and writes no files.",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
   "repository": "https://github.com/ValhalaStudio/budget-router-kit",
@@ -17,20 +16,7 @@
     "subagents",
     "unreal-engine"
   ],
-  "documentationUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/README.md",
-  "supportUrl": "https://github.com/ValhalaStudio/budget-router-kit/issues",
-  "privacyPolicyUrl": "https://github.com/ValhalaStudio/budget-router-kit/blob/main/plugins/budget-router/PRIVACY.md",
   "userConfig": {
-    "classifier": {
-      "type": "string",
-      "title": "Task classifier",
-      "description": "heuristic: keyword rules only; nothing is sent anywhere (default). haiku: Claude Code's own model call on your account labels each prompt from its first 2,000 characters (more accurate)",
-      "options": [
-        "haiku",
-        "heuristic"
-      ],
-      "default": "heuristic"
-    },
     "tierTrivial": {
       "type": "string",
       "title": "Trivial tier",
@@ -64,7 +50,7 @@
     "wrapUpPercent": {
       "type": "number",
       "title": "Wrap-up notice at",
-      "description": "Percent of today's budget at which one heads-up is given before the lock (0 switches it off)",
+      "description": "Percent of today's budget at which one heads-up is given before the caps tighten (0 switches it off)",
       "default": 90
     },
     "warnPercent": {
@@ -112,7 +98,7 @@
     "haikuModel": {
       "type": "string",
       "title": "Haiku model id",
-      "description": "Alias or full model id for Haiku turns and the classifier",
+      "description": "Alias or full model id for Haiku turns",
       "default": "haiku"
     },
     "sonnetModel": {

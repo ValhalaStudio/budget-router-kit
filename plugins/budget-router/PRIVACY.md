@@ -8,11 +8,10 @@ Contact: open an issue at https://github.com/ValhalaStudio/budget-router-kit/iss
 
 | Data | Why | Where it goes |
 |---|---|---|
-| The first 2,000 characters of each prompt | Only if you set the `classifier` option to `haiku` (the default is `heuristic`, which sends nothing): to label the task (trivial, light, standard, deep) | To Claude Haiku, through Claude Code's own model call on your account. Nothing else receives it. |
 | Rate-limit percentages and context size that Claude Code reports | To keep you inside a daily budget and warn about expiring caches | Stays in memory and in the local store |
 | Each shell command (Bash or PowerShell) as it runs | To notice commands you repeat (runbook memory) | Counted in the local store. Up to 150 repeated commands are kept, with the text of the latest run of each. Turn it off with the `runbooks` option. |
 | Whether each tool call failed | To raise effort when a turn goes badly and to learn which model step worked | A counter in memory; the learner keeps only success and failure counts, token costs and hashed weights per kind of work, never prompt text. A short follow-up phrase (such as "try again" or "thanks") is compared in memory with your last prompt and then dropped |
-| The name of the folder Claude Code is working in, read once per session by running the fixed command `pwd` (or `(Get-Location).Path` on Windows) | To keep the learner's record separate per project | Only a short hash of it is kept; the folder name itself is not stored or shared |
+| The name of the folder Claude Code is working in, read once per session from the session's working directory (no program is run) | To keep the learner's record separate per project | Only a short hash of it is kept; the folder name itself is not stored or shared |
 
 It does not read your conversation history, memory, summaries or uploaded files. It does not read credentials, tokens or key files. It does not send data to any other person, service or advertiser, and it contains no advertising.
 

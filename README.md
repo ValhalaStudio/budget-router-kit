@@ -12,7 +12,7 @@ Picks the model and effort for every turn, guards a daily usage budget, and lear
 | design, hard bugs, refactors, security, research | Opus · high |
 | "think hard" / "ultrathink" | Opus · xhigh |
 
-By default keyword rules label each prompt and nothing is sent anywhere. If you set `classifier` to `haiku`, a tiny Haiku call (~0.5 s) labels it instead (the first 2,000 characters of the prompt go to Claude Haiku through your own account). On long conversations it avoids small model switches, because a switch re-caches the whole context.
+Keyword rules label each prompt, and nothing is sent anywhere. On long conversations it avoids small model switches, because a switch re-caches the whole context.
 
 **Daily budget.** Claude subscriptions only have a 5-hour and a weekly limit, so the daily budget is what is left of the weekly limit, split evenly over the days until it resets. A quiet day leaves more for the next ones.
 
@@ -60,10 +60,10 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.4 |
+| budget-router | 0.10.5 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
-| Test suite | 109 tests via `claude plugin test`, plus `claude plugin validate` |
+| Test suite | 103 tests via `claude plugin test`, plus `claude plugin validate` |
 
 Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
 
