@@ -1,5 +1,5 @@
 name: Bug report
-description: Something routes, counts or refuses wrongly
+description: Something routes or counts wrongly
 labels: [bug]
 body:
   - type: textarea

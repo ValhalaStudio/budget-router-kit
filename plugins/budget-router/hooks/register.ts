@@ -3,11 +3,8 @@ import {
   addPace,
   auditCommands,
   helperHint,
-  isOffered,
   isUnrealBuildPrompt,
   parseList,
-  parseSubagentModels,
-  planSpawn,
   projectExhaustion,
   pushLog,
   shouldStick,
@@ -52,7 +49,6 @@ type Ledger = {
   fiveHourReset?: string
   alerted: number
   wrapped?: boolean // the wrap-up notice was given today
-  unlockUntil?: number
   seenAt: number
 }
 
@@ -73,13 +69,10 @@ type Opts = {
   warnCap: Spec
   criticalPercent: number
   criticalCap: Spec
-  lockAtLimit: boolean
   includeFiveHour: boolean
   haikuMaxContext: number
   stickyContext: number
   models: Record<Family, string>
-  subagentModels: Record<string, Family>
-  hideAgentsAtCritical: string[]
   logDecisions: boolean
   agentHints: boolean
   unrealRules: boolean
@@ -106,16 +99,13 @@ type Opts = {
   qualityWeight: number
   invite: boolean
   priceTable?: Record<Family, Price>
-  reflect: boolean
-  reflectPerDay: number
 }
 
 const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
 const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const TIERS: readonly Tier[] = ['trivial', 'light', 'standard', 'deep', 'max']
-const LEVEL_NAMES = ['normal', 'capped', 'capped hard', 'LOCKED'] as const
+const LEVEL_NAMES = ['normal', 'capped', 'capped hard', 'spent'] as const
 const DAY_MS = 86_400_000
-const UNLOCK_MS = 3_600_000
 const STORE_KEY = 'ledger'
 const MODELS_KEY = 'models'
 
@@ -205,7 +195,7 @@ function parsePrices(raw: unknown): Record<Family, Price> | undefined {
 
 function readOptions(options: PluginOptions): Opts {
   return {
-    classifier: str(options.classifier, 'haiku'),
+    classifier: str(options.classifier, 'heuristic'),
     tiers: {
       trivial: parseSpec(options.tierTrivial, { family: 'haiku', effort: 'low' }),
       light: parseSpec(options.tierLight, { family: 'sonnet', effort: 'low' }),
@@ -218,7 +208,6 @@ function readOptions(options: PluginOptions): Opts {
     warnCap: parseSpec(options.warnCap, { family: 'sonnet', effort: 'high' }),
     criticalPercent: num(options.criticalPercent, 80),
     criticalCap: parseSpec(options.criticalCap, { family: 'haiku', effort: 'medium' }),
-    lockAtLimit: bool(options.lockAtLimit, true),
     includeFiveHour: bool(options.includeFiveHour, true),
     haikuMaxContext: num(options.haikuMaxContext, 100_000),
     stickyContext: num(options.stickyContext, 60_000),
@@ -227,8 +216,6 @@ function readOptions(options: PluginOptions): Opts {
       sonnet: str(options.sonnetModel, 'sonnet'),
       opus: str(options.opusModel, 'opus'),
     },
-    subagentModels: parseSubagentModels(options.subagentModels),
-    hideAgentsAtCritical: parseList(options.hideAgentsAtCritical),
     logDecisions: bool(options.logDecisions, true),
     agentHints: bool(options.agentHints, true),
     unrealRules: bool(options.unrealRules, true),
@@ -242,7 +229,7 @@ function readOptions(options: PluginOptions): Opts {
     dayStartHour: num(options.dayStartHour, 8),
     dayEndHour: num(options.dayEndHour, 24),
     paceSlack: num(options.paceSlack, 15),
-    idleGuard: ['off', 'warn', 'ask'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
+    idleGuard: ['off', 'warn'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
     idleMinTokens: num(options.idleMinTokens, 60_000),
     nudgeTokens: num(options.nudgeTokens, 150_000),
     runbooks: bool(options.runbooks, true),
@@ -255,8 +242,6 @@ function readOptions(options: PluginOptions): Opts {
     qualityWeight: num(options.qualityWeight, 0.05),
     invite: bool(options.inviteContribution, true),
     priceTable: parsePrices(options.priceTable),
-    reflect: bool(options.reflect, false),
-    reflectPerDay: num(options.reflectPerDay, 8),
   }
 }
 
@@ -270,7 +255,6 @@ let level: Pressure['level'] = 0
 let tzMin = -new Date().getTimezoneOffset()
 let learned: Partial<Record<Family, string>> = {}
 let lastMainTurnAt = 0 // when the last main-conversation turn ended (the prompt cache is warm for a while after)
-let soft = false // /budget soft: no refusals at 100%, stay at the second cap
 let paceWarnedDay = ''
 let paceNote = ''
 
@@ -378,7 +362,6 @@ async function addLog($: EngineInterface, entry: LogEntry) {
 }
 
 const PACE_KEY = 'pace'
-const SOFT_KEY = 'soft'
 
 // Samples of today's budget use over time: the burn rate, and a one-time heads-up
 // when the last 90 minutes' pace would use the whole day's budget within a few hours.
@@ -455,20 +438,18 @@ function catalogSuggest(text: string) {
 const CMDS_KEY = 'cmdstats'
 const BOOK_KEY = 'runbooks'
 const BANDIT_KEY = 'bandit'
-const REFLECT_KEY = 'reflect'
 let cmdStats: CmdStats = {}
 let runbooks: Runbook[] = []
 let learnedData: Learned = {}
 let turnErrors = 0 // failed tool calls since the last prompt, counted as they happen
 let v06Loaded = false
 let lastSizeBucket = 0
-let idleAskedAt = 0
 let currentBucket = ''
 let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.3'
+const PLUGIN_VERSION = '0.10.4'
 const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
@@ -489,18 +470,21 @@ const projectHash = (cwd: string) => {
   return cwd === '' ? 'x' : h.toString(36)
 }
 // The hook event carries no working directory, but a spawned process starts in the project folder.
+function setProject(dir: string) {
+  if (dir === '') return false
+  smartProject = projectHash(dir.toLowerCase())
+  return true
+}
 async function detectProject($: EngineInterface) {
-  for (const cmd of [['pwd'], ['powershell', '-NoProfile', '-Command', '(Get-Location).Path']]) {
-    try {
-      const r = await $.process.run(cmd, { timeoutMs: 8000 })
-      const dir = r.stdout.trim()
-      if (dir !== '') {
-        smartProject = projectHash(dir.toLowerCase())
-        return
-      }
-    } catch {
-      // try the next one
-    }
+  try {
+    if (setProject((await $.process.run(['pwd'], { timeoutMs: 8000 })).stdout.trim())) return
+  } catch {
+    // try PowerShell
+  }
+  try {
+    setProject((await $.process.run(['powershell', '-NoProfile', '-Command', '(Get-Location).Path'], { timeoutMs: 8000 })).stdout.trim())
+  } catch {
+    // no project hash
   }
 }
 const smartOn = () => o.learn && (o.learnMode === 'live' || o.learnMode === 'shadow')
@@ -573,10 +557,6 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
   pending = undefined
   try {
     let ok = !e.isAborted && turnErrors <= 1
-    if (o.reflect && !e.isAborted && turnErrors >= 1 && turnErrors <= 2) {
-      const verdictOk = await reflectJudge($, done.text, e.answer, turnErrors)
-      if (verdictOk !== undefined) ok = verdictOk
-    }
     learnedData = recordOutcome(learnedData, done.bucket, done.rung, ok)
     lastOutcome = { bucket: done.bucket, rung: done.rung, ok, at: Date.now() }
     await $.store.set(BANDIT_KEY, learnedData)
@@ -585,48 +565,7 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
   }
 }
 
-// A cheap second opinion for the unclear cases (one or two failed tool calls), a few per day.
-async function reflectJudge($: EngineInterface, request: string, answer: string, errors: number): Promise<boolean | undefined> {
-  try {
-    const day = localDay(Date.now())
-    const used = (await $.store.get(REFLECT_KEY)) as { day: string; n: number } | undefined
-    const n = used && used.day === day ? used.n : 0
-    if (n >= o.reflectPerDay) return undefined
-    await $.store.set(REFLECT_KEY, { day, n: n + 1 })
-    const r = await $.model.complete({
-      model: o.models.haiku,
-      system: 'You grade whether an AI assistant completed a request. Reply with exactly one word: GOOD or WEAK.',
-      prompt: `Request: ${request}\nFailed tool calls during the turn: ${errors}\nFinal reply: ${answer.slice(0, 600)}`,
-      maxTokens: 8,
-      effort: 'low',
-      timeoutMs: 6000,
-    })
-    const word = r.isAnswered ? r.text.toUpperCase().match(/GOOD|WEAK/)?.[0] : undefined
-    return word === undefined ? undefined : word === 'GOOD'
-  } catch {
-    return undefined
-  }
-}
 
-async function homeDir($: EngineInterface): Promise<string> {
-  return (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
-}
-
-async function writeRunbook($: EngineInterface, dir: string, file: string, body: string) {
-  const full = `${dir}/${file}`
-  try {
-    await $.fs.write(full, body)
-    return
-  } catch {
-    // the folder may not exist yet
-  }
-  if (/^[A-Za-z]:/.test(dir)) {
-    await $.process.run(['powershell', '-NoProfile', '-Command', `New-Item -ItemType Directory -Force -Path '${dir.replace(/'/g, "''")}' | Out-Null`], { timeoutMs: 10_000 })
-  } else {
-    await $.process.run(['mkdir', '-p', dir], { timeoutMs: 10_000 })
-  }
-  await $.fs.write(full, body)
-}
 
 async function runbookCommand($: EngineInterface, raw: string): Promise<string> {
   if (!v06Loaded) await loadV06($)
@@ -669,14 +608,8 @@ async function runbookCommand($: EngineInterface, raw: string): Promise<string> 
     let name = (args[0] ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '') || runbookName(stat.sample)
     const base = name
     for (let n = 2; runbooks.some(r => r.name === name); n++) name = `${base}-${n}`
-    const dir = o.runbookDir !== '' ? o.runbookDir.replace(/\\/g, '/') : `${(await homeDir($)).replace(/\\/g, '/')}/.claude/runbooks`
-    if (dir.startsWith('/.claude')) return 'Could not find your home folder; set the runbookDir option and try again.'
+    const dir = o.runbookDir !== '' ? o.runbookDir.replace(/\\/g, '/') : '~/.claude/runbooks'
     const file = `${dir}/${runbookFile(name, stat.tool)}`
-    try {
-      await writeRunbook($, dir, runbookFile(name, stat.tool), runbookBody(stat.sample, stat.tool, new Date()))
-    } catch (err) {
-      return `Could not write ${file}: ${err instanceof Error ? err.message : String(err)}`
-    }
     const rb: Runbook = { name, file, tool: stat.tool, description: `${args.slice(1).join(' ')} ${stat.sample}`.slice(0, 600), runs: '' }
     rb.runs = runbookRunCommand(rb)
     runbooks = [...runbooks, rb]
@@ -685,7 +618,7 @@ async function runbookCommand($: EngineInterface, raw: string): Promise<string> 
     await $.store.set(BOOK_KEY, runbooks)
     await $.store.set(CMDS_KEY, cmdStats)
     await addLog($, { t: Date.now(), k: 'runbook', name, act: 'saved' })
-    return `Saved ${file}\nRun it with: ${rb.runs}\nFuture prompts that match it will get a one-line pointer to it. Read the script before you run it.`
+    return `Remembered \"${name}\". budget-router writes no files: save the script below yourself as ${file}, then later prompts can be pointed to it. Read it before you run it.\nRun it with: ${rb.runs}\n--- ${runbookFile(name, stat.tool)} ---\n${runbookBody(stat.sample, stat.tool, new Date())}`
   }
   return 'Usage: /runbook [list] | save [#n] [name] [words describing it] | forget <name> | ignore'
 }
@@ -887,7 +820,7 @@ function alert($: EngineInterface, p: Pressure, now: number) {
   const why = p.daily >= o.warnPercent || !o.includeFiveHour ? day : `5-hour window at ${Math.round(p.five)}%`
   const text =
     p.level === 3
-      ? `⛔ Today's Claude budget is spent (${day}). New prompts are refused until ${clock(nextMidnight(now))}; /budget unlock overrides for 1 hour.`
+      ? `⛔ Today's Claude budget is spent (${day}). Turns stay at ${o.criticalCap.family}·${o.criticalCap.effort}; nothing is refused. A new share starts at ${clock(nextMidnight(now))}.`
       : p.level === 2
         ? `⚠⚠ Claude usage: ${why}. Turns are now capped at ${o.criticalCap.family}·${o.criticalCap.effort}.`
         : `⚠ Claude usage: ${why}. Turns are now capped at ${o.warnCap.family}·${o.warnCap.effort}.`
@@ -899,7 +832,7 @@ function alert($: EngineInterface, p: Pressure, now: number) {
 
 function wrapUp($: EngineInterface, p: Pressure, now: number) {
   const left = Math.max(0, Math.round(100 - p.daily))
-  const lock = o.lockAtLimit && !soft ? `Prompts are refused at 100% until ${clock(nextMidnight(now))}` : `Turns stay at ${o.criticalCap.family}·${o.criticalCap.effort} from 100%`
+  const lock = `Turns stay at ${o.criticalCap.family}·${o.criticalCap.effort} from 100%; no prompt is ever refused`
   const text = `⏳ ${Math.round(p.daily)}% of today's Claude budget is used (about ${left}% left). Good moment to finish what is in hand, commit, and note where you stopped. ${lock}.`
   $.ui.toast(text, { timeoutMs: 25_000 })
   void $.session
@@ -912,25 +845,22 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   if (!l) {
     lines.push('  No rate-limit reading yet: it appears after the first reply on a Claude subscription.')
   } else {
-    const unlocked = (l.unlockUntil ?? 0) > now ? ` (override until ${clock(l.unlockUntil!)})` : ''
     lines.push(
       `  today ${l.day}: ${Math.round(p.daily)}% of the daily budget used (${p.usedPts.toFixed(1)} of ${p.budgetPts.toFixed(1)} weekly points); day ends ${clock(nextMidnight(now))}`,
       `  weekly window: ${Math.round(p.week)}% used, resets ${stamp(Date.parse(l.windowReset))}`,
       `  5-hour window: ${Math.round(p.five)}%${l.fiveHourReset ? `, resets ${clock(Date.parse(l.fiveHourReset))}` : ''}`,
-      `  level: ${LEVEL_NAMES[p.level]}${unlocked}`,
+      `  level: ${LEVEL_NAMES[p.level]}`,
     )
   }
   lines.push(
     `  route: ${route ? `${route.family}·${route.effort} for a ${route.tier} turn (${route.why})` : 'not chosen yet'}${pin ? ' [pinned: /route auto to release]' : ''}`,
-    `  caps: ${o.warnPercent}% → ${o.warnCap.family}·${o.warnCap.effort}, ${o.criticalPercent}% → ${o.criticalCap.family}·${o.criticalCap.effort}, 100% → ${o.lockAtLimit ? 'lock' : 'no lock'}`,
-    `  subagents: ${Object.entries(o.subagentModels).map(([t, f]) => `${t} → ${f}`).join(', ') || 'no model rules'}${o.hideAgentsAtCritical.length > 0 ? `; hidden past ${o.criticalPercent}%: ${o.hideAgentsAtCritical.join(', ')}` : ''}`,
-    `  lock: ${!o.lockAtLimit ? 'off (option)' : soft ? 'soft: no refusal at 100%, stays at the second cap (/budget hard to refuse)' : 'hard: refuses prompts at 100%'}`,
+    `  caps: ${o.warnPercent}% → ${o.warnCap.family}·${o.warnCap.effort}, ${o.criticalPercent}% → ${o.criticalCap.family}·${o.criticalCap.effort}, 100% → stays at the second cap`,
     `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills and /budget vet <path> check the skill list`,
   )
   if (ctxTokens > 0) lines.push(`  context: ${kTokens(ctxTokens)} tokens, about ${usd(stepReadUsd(ctxTokens, route?.family ?? 'sonnet'))} to re-read per step from cache, about ${usd(stepWriteUsd(ctxTokens, route?.family ?? 'sonnet'))} if the cache has expired; /compact or a fresh session shrinks it`)
   if (paceNote !== '') lines.push(`  ${paceNote}`)
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
-  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle${o.idleGuard === 'ask' ? '; pauses that prompt once' : ''})`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
+  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle)`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
   lines.push(`  runbooks: ${!o.runbooks ? 'off' : `${runbooks.length} saved, ${waiting().length} repeated command(s) waiting (/runbook)`}`)
   if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
   else if (smartOn()) {
@@ -972,8 +902,8 @@ export const register: Register = (on, options) => {
     await detectProject($)
     await $.command.register({
       name: 'budget',
-      description: "Show today's Claude usage budget and route; 'unlock' overrides the lock for 1 hour",
-      argumentHint: '[unlock|reset|soft|hard|skills|vet <path>|learn [reset|export]|wipe]',
+      description: "Show today's Claude usage budget and route",
+      argumentHint: '[reset|skills|vet <path>|learn [reset|export]|wipe]',
     })
     await $.command.register({
       name: 'route',
@@ -986,7 +916,6 @@ export const register: Register = (on, options) => {
       argumentHint: '[list|save [#n] [name]|forget <name>|ignore]',
     })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
-    soft = (await $.store.get(SOFT_KEY)) === true
     const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
     await refreshCatalog($)
@@ -1047,11 +976,6 @@ export const register: Register = (on, options) => {
     level = p.level
     if (!v06Loaded) await loadV06($)
     const isOwnCommand = /^\s*\/(budget|route|runbook)\b/.test(e.text)
-    if (p.level === 3 && o.lockAtLimit && !soft && !isOwnCommand && !((l?.unlockUntil ?? 0) > now)) {
-      return {
-        drop: `⛔ Today's Claude budget is spent (${Math.round(p.daily)}% of today's share; week at ${Math.round(p.week)}%). Locked until ${clock(nextMidnight(now))}. /budget unlock overrides for 1 hour.`,
-      }
-    }
     let extra: string[] = []
     // A prompt typed into a running turn rides that turn's model.
     if (e.turnId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !isOwnCommand) {
@@ -1082,10 +1006,6 @@ export const register: Register = (on, options) => {
       const idle = o.idleGuard === 'off' ? undefined : idleRebuild(ctxTokens, lastMainTurnAt > 0 ? now - lastMainTurnAt : undefined, o.cacheWarmMinutes * 60_000, o.idleMinTokens, route?.family ?? 'sonnet')
       if (idle) {
         await addLog($, { t: now, k: 'idle', ctx: idle.ctx, usd: Math.round(idle.rebuildUsd * 100) / 100 })
-        if (o.idleGuard === 'ask' && now - idleAskedAt > 10 * 60_000) {
-          idleAskedAt = now
-          return { drop: `${idleText(idle)} Send the prompt again to carry on as it is.` }
-        }
         $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
       }
       let c: { tier: Tier; why: string } = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : await classify($, e.text, route?.tier)
@@ -1169,30 +1089,10 @@ export const register: Register = (on, options) => {
     return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
   })
 
-  // A new subagent: no new ones once today's budget is spent (the lock), and
-  // read-only helper types run on a cheap model when the call did not name one.
-  // The per-step cap in turn.step still applies on top of this.
-  on('agent.spawn', async ($, e, next) => {
-    const now = Date.now()
-    const l = await loadLedger($)
-    const p = pressure(l, now)
-    level = p.level
-    if (p.level === 3 && o.lockAtLimit && !soft && !((l?.unlockUntil ?? 0) > now)) {
-      await addLog($, { t: now, k: 'spawn', type: e.subagentType, note: 'refused: budget spent', level: p.level })
-      return {
-        deny: `⛔ budget-router: today's Claude budget is spent, so no new subagents until ${clock(nextMidnight(now))} (/budget unlock overrides for 1 hour).`,
-      }
-    }
-    const plan = planSpawn(e, o.subagentModels)
-    await addLog($, { t: now, k: 'spawn', type: e.subagentType, note: plan.note, level: p.level })
-    return plan.model ? next({ ...e, model: o.models[plan.model] }) : next(e)
-  })
-
-  // Past the second cap the model is not offered the types listed in the
-  // hideAgentsAtCritical option (none by default).
+  // Only listens, to know which skills and agents are installed; every offer passes on unchanged.
   on('agent.offer', ($, e, next) => {
     if (e.source !== 'built-in') noteCatalog({ kind: 'agent', name: e.agent, description: e.description, source: e.source })
-    return isOffered(e.agent, level, o.hideAgentsAtCritical) ? next(e) : { isOffered: false }
+    return next(e)
   })
 
   // Passes every tool call through untouched; see observeTool.
@@ -1259,27 +1159,12 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
     if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }
-    if (arg === 'soft' || arg === 'hard') {
-      soft = arg === 'soft'
-      await $.store.set(SOFT_KEY, soft)
-      return {
-        text: soft
-          ? 'Soft lock: at 100% of the daily budget prompts are not refused; turns stay at the second cap. Pair it with the autoContinueAtUsageLimit setting to wait out a real limit. /budget hard refuses again.'
-          : 'Hard lock: prompts are refused at 100% of the daily budget (unless the lockAtLimit option is off).',
-      }
-    }
-    if (arg === 'unlock') {
-      if (!l) return { text: 'Nothing is locked.' }
-      await $.store.set(STORE_KEY, { ...l, unlockUntil: now + UNLOCK_MS })
-      return { text: `Lock overridden until ${clock(now + UNLOCK_MS)}.` }
-    }
     if (arg === 'wipe') {
       // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
       // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
       // are left where they are.
-      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, SOFT_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, REFLECT_KEY, SMART_KEY]) await $.store.delete(key)
+      for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
       learned = {}
-      soft = false
       pacerU = 0
       cmdStats = {}
       runbooks = []

@@ -84,71 +84,6 @@ const core = { plugin: 'engine', tier: 'core' }
 const spawn = (subagentType: string, extra: Record<string, unknown> = {}) =>
   ({ tool_use_id: 't1', prompt: 'look around', description: 'look', subagentType, provider: core, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra }) as never
 
-describe('agent.spawn hook', () => {
-  test('Explore runs on haiku, a named model is respected, and the spawn is logged', async ($, on) => {
-    mock.store(on)
-    const seen: Array<string | undefined> = []
-    on('agent.spawn', async (_$, e) => {
-      seen.push(e.model)
-      return { model: e.model ?? 'inherit', agentId: `a${seen.length}` }
-    })
-    const a = await $.agent.spawn(spawn('Explore'))
-    expect(a.model).toBe('haiku')
-    const b = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
-    expect(b.model).toBe('opus')
-    const c = await $.agent.spawn(spawn('general-purpose'))
-    expect(c.model).toBe('inherit')
-    expect(seen).toEqual(['haiku', 'opus', undefined])
-    // /route why reads the decision log back through the plugin's own command
-    const why = await $.command.run({ command: 'route', args: 'why' } as never)
-    expect(why.text).toContain('Explore: Explore -> haiku')
-    expect(why.text).toContain('call chose opus')
-    expect(why.text).toContain('general-purpose: unchanged')
-  })
-
-  const spentDay = () => {
-    const day = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-    return { day, windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() }
-  }
-
-  test('no new subagents once the day is spent', async ($, on) => {
-    mock.store(on, { ledger: spentDay() })
-    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    const refused = await $.agent.spawn(spawn('Explore'))
-    expect(refused.deny).toContain('budget is spent')
-  })
-
-  test('/budget unlock lets subagents start again', async ($, on) => {
-    mock.store(on, { ledger: { ...spentDay(), unlockUntil: Date.now() + 3_600_000 } })
-    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    const allowed = await $.agent.spawn(spawn('Explore'))
-    expect(allowed.deny).toBeUndefined()
-  })
-})
-
-describe('agent.offer hook', () => {
-  const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-  const ledger = (usedPts: number) => ({ day: day(), windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 10 + usedPts, budgetPts: 10, fiveHourPct: 0, alerted: 0, seenAt: Date.now() })
-  const offer = (agent: string) => ({ agent, description: 'x', source: 'built-in', provider: core }) as never
-
-  test('a listed type is still offered before the second cap', { options: { hideAgentsAtCritical: 'Plan' } }, async ($, on) => {
-    mock.store(on, { ledger: ledger(7) }) // 70% of today's budget: level 1
-    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    on('agent.offer', async () => ({ isOffered: true }))
-    await $.agent.spawn(spawn('Explore')) // the plugin reads the budget level here
-    expect((await $.agent.offer(offer('Plan'))).isOffered).toBe(true)
-  })
-
-  test('at 85% the listed type disappears and others stay', { options: { hideAgentsAtCritical: 'Plan' } }, async ($, on) => {
-    mock.store(on, { ledger: ledger(8.5) }) // level 2
-    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    on('agent.offer', async () => ({ isOffered: true }))
-    await $.agent.spawn(spawn('Explore'))
-    expect((await $.agent.offer(offer('Plan'))).isOffered).toBe(false)
-    expect((await $.agent.offer(offer('Explore'))).isOffered).toBe(true)
-  })
-})
-
 describe('turn.complete hook', () => {
   const usage = (inp: number, cr: number, cc: number) => ({ model: 'claude-sonnet-5-5', input_tokens: inp, output_tokens: 50, cache_read_input_tokens: cr, cache_creation_input_tokens: cc })
   const done = (extra: Record<string, unknown>) => ({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'turn-1', reason: 'answer', ...extra }) as never
@@ -268,18 +203,6 @@ describe('vetting a skill file', () => {
 describe('v0.4 hooks in the engine', () => {
   const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
   const spent = () => ({ day: day(), windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() })
-
-  test('/budget soft keeps subagents starting after the budget is spent; /budget hard refuses again', async ($, on) => {
-    mock.store(on, { ledger: spent() })
-    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    expect((await $.agent.spawn(spawn('Explore'))).deny).toContain('budget is spent')
-    const soft = await $.command.run({ command: 'budget', args: 'soft' } as never)
-    expect(soft.text).toContain('Soft lock')
-    expect((await $.agent.spawn(spawn('Explore'))).deny).toBeUndefined()
-    const hard = await $.command.run({ command: 'budget', args: 'hard' } as never)
-    expect(hard.text).toContain('Hard lock')
-    expect((await $.agent.spawn(spawn('Explore'))).deny).toContain('budget is spent')
-  })
 
   test('a build-failure prompt gets the log-triage hint as hidden context', { options: { classifier: 'heuristic' } }, async ($, on) => {
     mock.store(on)
@@ -719,15 +642,16 @@ describe('v0.6 hooks in the engine', () => {
     expect(why.text).toContain('idle cache rebuilds warned today: 1')
   })
 
-  test('ask mode pauses that prompt once, then lets it through', { options: { classifier: 'heuristic', cacheWarmMinutes: -1, idleMinTokens: 1, idleGuard: 'ask' } }, async ($, on) => {
-    mock.store(on)
+  test('a spent day does not drop a prompt, and no spawn hook exists', { options: { classifier: 'heuristic' } }, async ($, on) => {
+    const day = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+    mock.store(on, { ledger: { day, windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() } })
     quiet(on)
-    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
-    await $.turn.complete(done())
-    const first = await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    expect((first as { drop?: string }).drop).toContain('Send the prompt again')
-    const second = await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    expect((second as { drop?: string }).drop).toBeUndefined()
+    on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
+    const r = await $.prompt.submit({ text: 'rename this variable', origin: { kind: 'composer' } } as never)
+    expect((r as { drop?: string }).drop).toBeUndefined()
+    const a = await $.agent.spawn(spawn('Explore'))
+    expect(a.deny).toBeUndefined()
+    expect(a.model).toBe('inherit')
   })
 
   test('a command repeated four times is offered, saved on request, and then pointed to', { options: { classifier: 'heuristic', runbookDir: '/rb' } }, async ($, on) => {
@@ -746,8 +670,8 @@ describe('v0.6 hooks in the engine', () => {
     expect(list.text).toContain('#1 4x PowerShell')
     const saved = await $.command.run({ command: 'runbook', args: 'save ue-build compile the pilgerweg editor target' } as never)
     expect(saved.text).toContain('/rb/ue-build.ps1')
-    expect((written[0]?.path ?? '').split(String.fromCharCode(92)).join('/').endsWith('/rb/ue-build.ps1')).toBe(true)
-    expect(written[0]?.text).toContain('Build.bat')
+    expect(written).toEqual([]) // the plugin writes no files; the script comes back as text
+    expect(saved.text).toContain('Build.bat')
     const r = await $.prompt.submit({ text: 'please compile the pilgerweg editor target again', origin: { kind: 'composer' } } as never)
     expect((r.context ?? []).join('\n')).toContain('ue-build')
     expect((r.context ?? []).join('\n')).toContain('-File "/rb/ue-build.ps1"')

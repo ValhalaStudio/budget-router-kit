@@ -1,12 +1,12 @@
 {
   "name": "budget-router",
   "displayName": "Budget Router",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
   },
-  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning before the lock, and learns which cheaper setting is enough for your work. Local only; sharing anonymous counts to help it learn is optional.",
+  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning, and learns which cheaper setting is enough for your work. Sends nothing by default, never blocks a prompt, a tool call or a subagent, and writes no files.",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
   "repository": "https://github.com/ValhalaStudio/budget-router-kit",
@@ -24,12 +24,12 @@
     "classifier": {
       "type": "string",
       "title": "Task classifier",
-      "description": "haiku: a tiny Haiku call labels each prompt (more accurate). heuristic: keyword rules only (free, instant)",
+      "description": "heuristic: keyword rules only; nothing is sent anywhere (default). haiku: Claude Code's own model call on your account labels each prompt from its first 2,000 characters (more accurate)",
       "options": [
         "haiku",
         "heuristic"
       ],
-      "default": "haiku"
+      "default": "heuristic"
     },
     "tierTrivial": {
       "type": "string",
@@ -91,12 +91,6 @@
       "description": "Highest model:effort allowed past criticalPercent",
       "default": "haiku:medium"
     },
-    "lockAtLimit": {
-      "type": "boolean",
-      "title": "Lock at 100%",
-      "description": "Refuse prompts once today's budget is spent, until local midnight (/budget unlock overrides for 1 hour)",
-      "default": true
-    },
     "includeFiveHour": {
       "type": "boolean",
       "title": "Also cap on the 5-hour window",
@@ -132,18 +126,6 @@
       "title": "Opus model id",
       "description": "Alias or full model id for Opus turns",
       "default": "opus"
-    },
-    "subagentModels": {
-      "type": "string",
-      "title": "Subagent model rules",
-      "description": "JSON object: agent type -> haiku|sonnet|opus. Used only when the Agent call names no model. {} turns the rules off.",
-      "default": "{\"Explore\":\"haiku\",\"claude-code-guide\":\"haiku\",\"statusline-setup\":\"haiku\"}"
-    },
-    "hideAgentsAtCritical": {
-      "type": "string",
-      "title": "Hide agent types past the second cap",
-      "description": "Comma-separated agent types the model is not offered once usage passes the second threshold (empty = hide none)",
-      "default": ""
     },
     "logDecisions": {
       "type": "boolean",
@@ -226,7 +208,7 @@
     "idleGuard": {
       "type": "string",
       "title": "Idle cache guard",
-      "description": "off, warn (a notice when a long pause means the context must be re-written) or ask (also pauses that prompt once)",
+      "description": "off, or warn (a notice when a long pause means the context must be re-written). Never holds a prompt",
       "default": "warn"
     },
     "idleMinTokens": {
@@ -256,7 +238,7 @@
     "runbookDir": {
       "type": "string",
       "title": "Runbook folder",
-      "description": "Where /runbook save writes scripts (blank: .claude/runbooks in your home folder)",
+      "description": "Folder shown as the suggested place to save a runbook script. The plugin never writes there itself (blank: ~/.claude/runbooks)",
       "default": ""
     },
     "learn": {
@@ -300,18 +282,6 @@
       "title": "Learner exploration",
       "description": "Chance (0 to 1) of trying one cheaper step where the current one has worked well",
       "default": 0.1
-    },
-    "reflect": {
-      "type": "boolean",
-      "title": "Cheap second opinion",
-      "description": "Off by default. For unclear turns (one or two failed tool calls) ask Haiku whether the request was completed; this sends the first 300 characters of the prompt and 600 of the reply to Haiku through your own Claude account",
-      "default": false
-    },
-    "reflectPerDay": {
-      "type": "number",
-      "title": "Second opinions per day",
-      "description": "Upper limit on those Haiku calls per day",
-      "default": 8
     }
   }
 }

@@ -12,15 +12,15 @@ Picks the model and effort for every turn, guards a daily usage budget, and lear
 | design, hard bugs, refactors, security, research | Opus · high |
 | "think hard" / "ultrathink" | Opus · xhigh |
 
-A tiny Haiku call (~0.5 s) labels each prompt. On long conversations it avoids small model switches, because a switch re-caches the whole context.
+By default keyword rules label each prompt and nothing is sent anywhere. If you set `classifier` to `haiku`, a tiny Haiku call (~0.5 s) labels it instead (the first 2,000 characters of the prompt go to Claude Haiku through your own account). On long conversations it avoids small model switches, because a switch re-caches the whole context.
 
 **Daily budget.** Claude subscriptions only have a 5-hour and a weekly limit, so the daily budget is what is left of the weekly limit, split evenly over the days until it resets. A quiet day leaves more for the next ones.
 
 - 50% of today's budget: alert, turns capped at Sonnet · high
 - 80%: alert, turns capped at Haiku · medium (the 5-hour window also triggers these caps)
-- 100%: new prompts refused until local midnight
+- 100%: turns stay at the second cap. budget-router never refuses a prompt, a tool call or a subagent; it only chooses the model and effort and tells you where you stand
 
-A status line under the prompt shows the route and the day / 5-hour / week percentages. The lock covers Claude Code only, not claude.ai chat in the browser or desktop app.
+A status line under the prompt shows the route and the day / 5-hour / week percentages. It covers Claude Code only, not claude.ai chat in the browser or desktop app.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.3 |
+| budget-router | 0.10.4 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Test suite | 109 tests via `claude plugin test`, plus `claude plugin validate` |
@@ -101,23 +101,18 @@ claude plugin update budget-router@budget-router-kit
 ## Use
 
 - `/budget`: today's numbers and the current route
-- `/budget unlock`: lifts the lock for 1 hour
 - `/budget reset`: re-measures today's budget from the next reply
 - `/budget learn`: what the cost-aware learner has seen and saved; `reset` clears it
-- Wrap-up notice: one heads-up when today's budget passes 90% (`wrapUpPercent`, 0 turns it off), before the lock. The status line also shows what the learner has saved once it is over $0.05.
+- Wrap-up notice: one heads-up when today's budget passes 90% (`wrapUpPercent`, 0 turns it off). The status line also shows what the learner has saved once it is over $0.05.
 - `/route deep`, `/route opus xhigh`, `/route sonnet`, `/route auto`: pin a tier or model for this session (caps still apply)
-- `/route why`: the latest routing decisions, the subagent rules that fired, and today's token use with the share of input served from the prompt cache
+- `/route why`: the latest routing decisions and today's token use with the share of input served from the prompt cache
 - `/config`: thresholds, caps, tier mapping and model ids
 
-## Subagents (new in 0.3)
+## Subagents
 
-**Model rules.** When the model starts a subagent and its call names no model, the plugin can pick one by agent type. The default sends `Explore`, `claude-code-guide` and `statusline-setup` to Haiku, which is where read-only searching belongs. Forks, resumed agents, teammates and workflow agents are left alone, and a model named in the call always wins. Change the rules in the `subagentModels` option (JSON, `{}` turns them off). The usage caps still apply to every subagent step on top of this.
+budget-router does not change how subagents start (0.10.4 removed the model rules, the spawn lock and agent hiding). While a usage cap applies, a subagent's requests are lowered to the same cap as the main turn, never raised.
 
-**The lock covers subagents.** Once today's budget is spent no new subagent starts (`/budget unlock` lifts it for an hour).
-
-**Hiding agent types.** The `hideAgentsAtCritical` option lists agent types (comma separated) that the model is no longer offered once usage passes the second threshold. Empty by default.
-
-**Decision log.** Routing decisions, subagent rules and per-turn token counts are kept in the plugin store (newest 200 rows, no prompt text, never sent anywhere). `/route why` prints them. Turn it off with `logDecisions`.
+**Decision log.** Routing decisions and per-turn token counts are kept in the plugin store (newest 200 rows, no prompt text, never sent anywhere). `/route why` prints them. Turn it off with `logDecisions`.
 
 ## More in 0.4
 
@@ -125,7 +120,7 @@ claude plugin update budget-router@budget-router-kit
 - **Helper-agent hints.** A prompt that fits a helper (a size survey, a pre-delete repo check, a diff review, a wide search) gets one hidden line suggesting it. It is decided by keywords, costs no model call, and `/route why` shows how many hints were given and how many were followed.
 - **Cache-aware switching.** The "stay on the same model in a long conversation" rule now lapses once the cache has gone cold (`cacheWarmMinutes`, 55 by default), because switching is then free.
 - **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.
-- **Soft lock.** `/budget soft` stops the refusals at 100%: turns stay at the second cap instead. `/budget hard` brings the refusals back. For a real limit, add Claude Code's own `autoContinueAtUsageLimit` setting so a session waits for the reset.
+- **No lock.** Since 0.10.4 nothing is refused at 100%. For a real limit, Claude Code's own `autoContinueAtUsageLimit` setting makes a session wait for the reset.
 - **`/budget skills`** lists what the command and skill list costs (names plus descriptions, in estimated tokens, by plugin) and the longest descriptions.
 - **`/budget vet <path>`** reads a skill, agent, command or plugin folder before you install it and flags red flags: hidden instructions, download-and-run commands, broad `allowed-tools`, hooks, encoded blobs, hidden unicode. It is advisory only: read everything yourself.
 
