@@ -91,6 +91,11 @@ The learner starts from my guesses and your own record, and one person's work is
 
 `/budget` shows whether a shared prior is in use. It is empty until enough people have contributed.
 
+**You do not have to upload anything: you can train your own.** Sharing is only a way to help the starting point. The learner already trains itself on your machine from your own turns (`learnMode: live`), and that record is the one that matters most for you. If you want to go further:
+
+- **Your own prior.** `aggregate.py` is a plain script that merges any folder of `/budget learn export` files into `hooks/prior.ts`. Run it on your own exports (or your team's, or your own machines') and install the plugin from your copy, and your starting point is yours, with nothing leaving your machines. `MIN_CONTRIBUTORS` (default 3) is the safeguard for public contributions; lower it if the contributors are all you.
+- **Your own analysis.** `plugins/budget-router/study/extract.py` turns your local Claude Code transcripts into one row per prompt (no prompt text kept), and `describe.py` and `predict_size.py` read those rows. They are pure Python and run entirely offline, so you can see which model and effort is enough for your kind of work, or fit your own size predictor, without sharing a byte.
+
 ## Update
 
 ```
