@@ -84,8 +84,8 @@ type Opts = {
   dayEndHour: number
   paceSlack: number
   idleGuard: string
-  idleMinTokens: number
-  nudgeTokens: number
+  idleMinContext: number
+  nudgeContext: number
   learn: boolean
   learnMinSamples: number
   learnExplore: number
@@ -206,8 +206,8 @@ function readOptions(options: PluginOptions): Opts {
     dayEndHour: num(options.dayEndHour, 24),
     paceSlack: num(options.paceSlack, 15),
     idleGuard: ['off', 'warn'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
-    idleMinTokens: num(options.idleMinTokens, 60_000),
-    nudgeTokens: num(options.nudgeTokens, 150_000),
+    idleMinContext: num(options.idleMinContext, 60_000),
+    nudgeContext: num(options.nudgeContext, 150_000),
     learn: bool(options.learn, true),
     learnMinSamples: num(options.learnMinSamples, 8),
     learnExplore: num(options.learnExplore, 0.1),
@@ -419,7 +419,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.6'
+const PLUGIN_VERSION = '0.10.7'
 const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
@@ -686,7 +686,7 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   if (ctxTokens > 0) lines.push(`  context: ${kTokens(ctxTokens)} tokens, about ${usd(stepReadUsd(ctxTokens, route?.family ?? 'sonnet'))} to re-read per step from cache, about ${usd(stepWriteUsd(ctxTokens, route?.family ?? 'sonnet'))} if the cache has expired; /compact or a fresh session shrinks it`)
   if (paceNote !== '') lines.push(`  ${paceNote}`)
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
-  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle)`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
+  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle)`}; context nudge ${o.nudgeContext > 0 ? `every ${kTokens(o.nudgeContext)}` : 'off'}`)
   if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
   else if (smartOn()) {
     const rows = smartSummary(smartData, Date.now())
@@ -738,8 +738,8 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     ctxTokens = e.context.tokens ?? ctxTokens
-    if (o.nudgeTokens > 0) {
-      const b = sizeBucket(ctxTokens, o.nudgeTokens)
+    if (o.nudgeContext > 0) {
+      const b = sizeBucket(ctxTokens, o.nudgeContext)
       if (b > lastSizeBucket) $.ui.toast(sizeNudgeText(ctxTokens, route?.family ?? 'sonnet'), { timeoutMs: 20_000 })
       lastSizeBucket = b
     }
@@ -810,7 +810,7 @@ export const register: Register = (on, options) => {
         await $.store.set(BANDIT_KEY, learnedData)
       }
       // Ghost-token guard: after a long pause the cache has expired and the whole context is re-written.
-      const idle = o.idleGuard === 'off' ? undefined : idleRebuild(ctxTokens, lastMainTurnAt > 0 ? now - lastMainTurnAt : undefined, o.cacheWarmMinutes * 60_000, o.idleMinTokens, route?.family ?? 'sonnet')
+      const idle = o.idleGuard === 'off' ? undefined : idleRebuild(ctxTokens, lastMainTurnAt > 0 ? now - lastMainTurnAt : undefined, o.cacheWarmMinutes * 60_000, o.idleMinContext, route?.family ?? 'sonnet')
       if (idle) {
         await addLog($, { t: now, k: 'idle', ctx: idle.ctx, usd: Math.round(idle.rebuildUsd * 100) / 100 })
         $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
@@ -936,8 +936,8 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  // The slash commands are markdown files (commands/*.md) that call these three tools, so no command.run
-  // hook is needed: the tools answer, the engine's commands are left alone.
+  // The slash commands are markdown files (commands/*.md) that call these two tools, so the tools answer
+  // and the engine's own commands are left alone.
   // Stands in for these two tools only, which exist only because this plugin registers them; no other tool call is matched here.
   on('tool.call', { tool: /^mcp__budget.router__(budget|route)$/ }, async ($, e) => {
     const which = /(budget|route)$/.exec(e.tool)?.[1]

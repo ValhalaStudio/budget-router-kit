@@ -56,3 +56,17 @@ Everything checked again: `claude plugin validate` passes, `claude plugin test` 
 - The commands are typed with the plugin prefix: `/budget-router:budget`, `/budget-router:route`. Each costs one very short Haiku turn, because a markdown command is a prompt. The exact text is shown as transcript lines, and the model replies "Done."
 - The optional Haiku classifier is gone; prompts are labelled by keyword rules only (the default before).
 - The time zone offset no longer falls back to `date`/`powershell`; if the engine reports UTC, days follow UTC.
+
+## Third review round (0.10.6; security scan passed, policy still held, with a content-policy reviewer)
+
+The directory now names a file for each note. Each is answered in 0.10.7:
+
+| # | Code | Note | Status | What was done |
+|---|---|---|---|---|
+| 17 | MCP_FORWARDS_CREDENTIAL_ENV | "Something in the plugin reads a credential (a token or API key) … `.claude-plugin/plugin.json`" | Addressed | The plugin reads no credential. The only names in `plugin.json` that look like one were two options that hold context sizes, `idleMinTokens` and `nudgeTokens`, and the keyword `token-saving`. They are renamed `idleMinContext`, `nudgeContext` and `cost-saving`. A value set under an old name falls back to its default. No option holds a secret, and none is passed to any server or environment. |
+| 18 | RUNTIME_FETCH_EXEC | "contains a command that downloads code and runs it straight away … `hooks/smart.ts`" | Addressed | Nothing downloads or runs code. The match was the prompt-shape regex in `kindOf`, a list of first words (`…|bash|…|curl|…`) used only to label a typed prompt as a pasted terminal line. It is now a word set with no pipe-separated shell names. The plugin still runs no program. |
+| 19 | MOD_ANSWERS_FOR_TOOL | "A hook of this mod on tool.call returns a result of its own … line 947" | Reviewer to confirm | This is how Claude Code serves a tool a plugin registers: the `$.tool.register` reference says to "serve it with a `tool.call` hook … that returns the result (a call no hook answers fails)". The hook is matched to `mcp__budget-router__budget` and `mcp__budget-router__route` only, and answers only after the person typed the matching command. The README, paragraph "Tools it stands in for", says which tools and when. |
+| 20 | MOD_CALL_NAMED_IN_TEXT | "spells command.run … but the directory found no such call" | Addressed | The word was in a code comment; reworded. |
+| 21 | MOD_HOOKS_POLICY_EVENT / MOD_HOOKS_OPERATION | "Say in the plugin's README what the hook changes / does" (prompt.context, prompt.submit) | Addressed | The README hook table now says exactly what each changes. `prompt.context` appends one fixed block named `budgetRouter` and passes everything else on as `next` returns it. `prompt.submit` passes the typed text on unchanged and can only add one hint line to the hidden context. |
+
+Checked again: `claude plugin validate` passes, `claude plugin test` passes (94 tests), `node --test checks/compliance.test.mjs` passes (15 checks).

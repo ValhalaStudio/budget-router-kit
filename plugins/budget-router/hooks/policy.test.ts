@@ -573,7 +573,7 @@ describe('v0.6 hooks in the engine', () => {
   const done = (answer = 'done') => ({ turnId: 't1', answer, durationMs: 10, isAborted: false, reason: 'answer' }) as never
 
   const ok = async () => ({ ref: 'r', result: '', text: 'ok' }) as never
-  test('a long pause with a big context gets a notice with the cost, and is logged', { options: { cacheWarmMinutes: -1, idleMinTokens: 1 } }, async ($, on) => {
+  test('a long pause with a big context gets a notice with the cost, and is logged', { options: { cacheWarmMinutes: -1, idleMinContext: 1 } }, async ($, on) => {
     const toasts: string[] = []
     mock.store(on)
     quiet(on, toasts)

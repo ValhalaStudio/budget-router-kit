@@ -1,6 +1,6 @@
 {
   "name": "budget-router",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
@@ -12,7 +12,7 @@
   "keywords": [
     "model-routing",
     "usage-budget",
-    "token-saving",
+    "cost-saving",
     "subagents",
     "unreal-engine"
   ],
@@ -197,13 +197,13 @@
       "description": "off, or warn (a notice when a long pause means the context must be re-written). Never holds a prompt",
       "default": "warn"
     },
-    "idleMinTokens": {
+    "idleMinContext": {
       "type": "number",
       "title": "Idle guard minimum context",
       "description": "Only warn when the context is at least this many tokens",
       "default": 60000
     },
-    "nudgeTokens": {
+    "nudgeContext": {
       "type": "number",
       "title": "Large-context notice",
       "description": "Notice each time the context grows past a multiple of this many tokens (0 turns it off)",

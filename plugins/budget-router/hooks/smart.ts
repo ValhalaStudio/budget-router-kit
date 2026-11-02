@@ -360,13 +360,20 @@ export const COMPLAINT_RE = /\b(but|still|not|wrong|fail(s|ed|ing)?|error|broken
  * The shape of a prompt, which is what predicts how much work follows. Real prompts are terse, so
  * topic keywords miss most of them; the first words and the length say more.
  */
+/** First words that mark a prompt as a pasted terminal line (only used to label the prompt's shape). */
+const SHELL_FIRST_WORDS = new Set([
+  'git', 'npm', 'python', 'docker', 'winget', 'kubectl', 'claude', 'cd', 'ls', 'sudo', 'ssh',
+  'powershell', 'pwsh', 'bash', 'pip',
+  'curl',
+])
+
 export function kindOf(text: string): string {
   const t = text.trim()
   const lower = t.toLowerCase()
   if (/^\[?request interrupted/.test(lower)) return 'interrupt'
   if (t.length <= 25 && /^(yes|yep|yeah|y|ok(ay)?|go|continue|resume|proceed|do it|sure|please do|go ahead|next|retry|keep going)\b/.test(lower)) return 'go'
   if (t.length > 600 || /\[image/.test(lower) || t.split('\n').length >= 5) return 'paste'
-  if (/^(powershell|pwsh|bash|ssh|sudo|git|npm|pip|python|curl|cd|ls|claude|docker|winget|kubectl)\b/.test(lower) || /^[\w./\\:-]+( +-{1,2}[\w-]+)+/.test(t)) return 'shell'
+  if (SHELL_FIRST_WORDS.has(/^[a-z]*/.exec(lower)?.[0] ?? '') || /^[\w./\\:-]+( +-{1,2}[\w-]+)+/.test(t)) return 'shell'
   if (/\b(research|investigate|compare|analy[sz]e|audit|evaluate|suggest|brainstorm|think hard|ultrathink|plan|design|strategy|review)\b/.test(lower)) return 'research'
   if (/\?\s*$/.test(t) || /^(how|what|where|why|when|which|who|is|are|does|do|did|can|could|should|would|whats|what's)\b/.test(lower)) return 'question'
   if (/^(ok(ay)?[, ]+)?(make|add|fix|implement|create|build|write|merge|push|install|remove|delete|move|rename|change|update|set|turn|kill|get|pull|run|start|stop|try|use|enable|disable|import|export|convert|copy|clean|relist|list|show|check|test|do|let'?s|lets|i want|we need)\b/.test(lower)) return 'change'
