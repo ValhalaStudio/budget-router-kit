@@ -110,13 +110,13 @@
     "idleGuard": {
       "type": "string",
       "title": "Idle cache guard",
-      "description": "warn (a notice when a pause of over 55 minutes means a context of 60k+ tokens is re-written from scratch) or off. Never holds a prompt",
+      "description": "warn (a notice when a pause of over 55 minutes means a context of 60k+ is re-written from scratch) or off. Never holds a prompt",
       "default": "warn"
     },
     "nudgeContext": {
       "type": "number",
       "title": "Large-context notice",
-      "description": "Notice each time the context grows past a multiple of this many tokens (0 turns it off)",
+      "description": "Notice each time the context grows past a multiple of this size, in context units (0 turns it off)",
       "default": 150000
     },
     "learnMode": {
@@ -127,7 +127,7 @@
     },
     "tips": {
       "type": "boolean",
-      "title": "Token-saving tips",
+      "title": "Usage-saving tips",
       "description": "Show a short tip when the situation calls for it (a long paste, a long turn, repeated failures, a capped day). Shown to you only, at most one every 10 minutes, each once per session. Details in CHEATSHEET.md",
       "default": true
     }
