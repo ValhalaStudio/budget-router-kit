@@ -1,10 +1,27 @@
 # budget-router
 
-Routes each Claude Code prompt to the right model and effort, and keeps you inside a daily usage budget.
+**Stay inside your Claude weekly limit without thinking about it.** A community plugin for Claude Code (not made or endorsed by Anthropic) that routes each prompt to the right model and effort, keeps you inside a daily usage budget, and shows you cheaper habits when they matter.
 
-Claude subscriptions only have a 5-hour and a weekly limit. budget-router splits what is left of the weekly limit evenly over the days until it resets, watches how much of today's share you have used, and tightens the model choice as it runs down. It works in Claude Code only (the terminal and the desktop app's Code tab), not in claude.ai chat.
+Claude subscriptions have only a 5-hour and a weekly limit. budget-router splits what is left of the weekly limit evenly over the days until it resets, watches how much of today's share you have used, and tightens the model choice as it runs down. It works in Claude Code only (the terminal and the desktop app's Code tab), not in claude.ai chat.
+
+```
+sonnet·high (standard) │ day 42% │ 5h 12% │ week 61% │ saved $3.10      ← the status bar under your prompt
+```
+
+## At a glance
+
+| You want | What provides it |
+|---|---|
+| To know where you stand | The status bar, and notices at 50%, 80% and a wrap-up heads-up at 90% of the day's share |
+| Never to be blocked by the plugin | It never refuses or holds a prompt, a tool call or a subagent |
+| The right model for each prompt | Keyword rules, a cautious learner, pace control and the budget caps |
+| Cheaper habits | Tips as notices, and the [cheatsheet](CHEATSHEET.md) |
+| Proof of what helps you | A local report with conclusions (`study/report.py` in the repository) |
+| Confidence it is safe | Six hooks, no network, no files, no programs, nothing added to prompts; see [what each hook does](#what-each-hook-does) |
 
 ## What it does
+
+### Routing
 
 | Prompt looks like | Runs on |
 |---|---|
@@ -14,16 +31,29 @@ Claude subscriptions only have a 5-hour and a weekly limit. budget-router splits
 | design, hard bugs, refactors, security, research | Opus · high |
 | "think hard" / "ultrathink" | Opus · xhigh |
 
-- **Daily budget.** At 50% of today's share, turns are capped at Sonnet · high. At 80%, at Haiku · medium (the 5-hour window can trigger the same caps). At 100% turns stay at that second cap. **It never refuses a prompt or a subagent**: when the day's share is spent you are told, and Claude Code's own limits are the only hard stop.
-- **Status bar.** The line under the prompt shows the current route, today's share used, the 5-hour and weekly windows, and the estimated saving: `sonnet·high (standard) │ day 42% │ 5h 12% │ week 61% │ saved $3.10`.
-- **Cache-aware.** In long conversations a one-step model switch is skipped while the prompt cache is still warm, because switching re-reads the whole conversation.
-- **Subagents.** budget-router does not change how subagents start and hides no agents. While a usage cap applies, a subagent's requests are lowered to the same cap as the main turn, never raised.
-- **Unreal Engine rule.** Prompts about UBT, linker, cook or packaging errors never run on the two cheapest tiers. budget-router does not touch permission prompts: if you use Epic's Unreal MCP (its `execute_tool_script` runs arbitrary Python inside the editor), keep Claude's tool approvals on.
-- **Pace control.** A small controller compares today's use with an even spread across your day (08:00 to 24:00 by default) and steps routes one or two notches cheaper while you are ahead. "Think hard" prompts and a pinned route are left alone.
-- **Escalation.** A turn with 3 failed tool calls gets one more notch of effort; 6 also raises the model one step, once per turn.
-- **Ghost-token guard.** Most of the cost of a long session is context re-read or re-written from the cache. After a long pause a notice shows what re-writing the context will cost (`idleGuard`: `warn` or `off`; it never holds a prompt), and a notice appears when the context passes each multiple of `nudgeContext`.
-- **Learner.** A cost-aware bandit over model and effort. It records, per kind of work and per project, whether each turn went well (few failed tool calls; you did not redo or rephrase it; a thanks counts as a win) and what the turn cost in tokens. It never leaves the rule-based choice without evidence: a cheaper step needs a record that it works here (or a rare, capped exploration on ordinary prompts, never on deep or max ones), and a dearer step needs a record that the rule choice keeps failing. As the daily budget runs out it weighs cost more heavily. Old evidence fades over about two weeks, and a new model id halves the record for that family. `learnMode`: `live` (default), `shadow` (learns, never changes the route) or `off`. Costs are estimates from list prices by model id.
+The first choice is **rules**: keywords and the shape of the prompt choose the tier. Then, in order: the learner may move one step on evidence; a model family whose own weekly limit is nearly full is skipped; pace control steps routes cheaper while you are ahead of an even day; the usage caps apply; and Haiku is not used on a very long conversation.
+
 - **Pinning.** The `pin` option fixes the route: a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`). `auto` (the default) routes every prompt. Usage caps still apply on top of a pin.
+- **Cache-aware.** In long conversations a one-step model switch is skipped while the prompt cache is still warm, because switching re-reads the whole conversation.
+- **Model ids.** The plugin acts only on models it recognises. It prefers an id the session has already run for that family; otherwise it swaps within the same generation, and only for plain ids such as `claude-sonnet-4-5`. A dated or provider-specific id is not swapped, so the request stays on the model Claude Code chose. A session on a model above Opus (Fable, Mythos) is routed to the current Opus, Sonnet or Haiku id.
+- **Unreal Engine rule.** Prompts about UBT, linker, cook or packaging errors never run on the two cheapest tiers. budget-router does not touch permission prompts: if you use Epic's Unreal MCP (its `execute_tool_script` runs arbitrary Python inside the editor), keep Claude's tool approvals on.
+
+### Budget
+
+- **Daily budget.** At 50% of today's share, turns are capped at Sonnet · high. At 80%, at Haiku · medium (the 5-hour window can trigger the same caps). At 100% turns stay at that second cap. **It never refuses a prompt or a subagent**: when the day's share is spent you are told, and Claude Code's own limits are the only hard stop.
+- **Status bar.** The route, today's share used, the 5-hour and weekly windows, and the estimated saving once it is positive.
+- **Pace control.** A small controller compares today's use with an even spread across your day (08:00 to 24:00) and steps routes one or two notches cheaper while you are ahead. "Think hard" prompts and a pinned route are left alone.
+- **Escalation.** A turn with 3 failed tool calls gets one more notch of effort; 6 also raises the model one step, once per turn.
+- **Subagents.** budget-router does not change how subagents start and hides no agents. While a usage cap applies, a subagent's requests are lowered to the same cap as the main turn, never raised.
+
+### Learning
+
+- **Learner.** A cost-aware bandit over model and effort. It records, per kind of work and per project, whether each turn went well (few failed tool calls; you did not redo or rephrase it; a thanks counts as a win) and what the turn cost in tokens. It never leaves the rule-based choice without evidence: a cheaper step needs a record that it works here (about 8 turns, or a rare, capped exploration on ordinary prompts, never on deep or max ones), and a dearer step needs a record that the rule choice keeps failing. As the daily budget runs out it weighs cost more heavily. Old evidence fades over about two weeks, and a new model id halves the record for that family. `learnMode`: `live` (default), `shadow` (learns, never changes the route) or `off`. Costs are estimates from list prices by model id. It is early and cautious, so expect little effect until it has a few weeks of your turns.
+- **Report.** `study/report.py` in the repository (not part of the plugin, never run by it) turns your local transcripts and the plugin's store into one HTML page: where the usage went, your longest turns and pauses, the measured cost of each effort level on each model, what the learner has found, and plain conclusions on what to change.
+
+### Habits
+
+- **Ghost-token guard.** Most of the cost of a long session is context re-read or re-written from the cache. After a long pause a notice shows what re-writing the context will cost (`idleGuard`: `warn` or `off`; it never holds a prompt), and a notice appears when the context passes each multiple of `nudgeContext`.
 - **Tips.** A short notice when the situation calls for a cheaper habit: a long paste, a build log, a long turn, repeated failed tool calls, a vague broad ask, a capped day, a command you could run yourself. Shown to you only (never added to the conversation), at most one every 10 minutes, each once per session; the `tips` option turns them off. Every habit, with its source, is in [CHEATSHEET.md](CHEATSHEET.md).
 - **Helper agents** (in `agents/`): `scout` (wide searches) and `log-triage` (cuts a long build, cook or test log to its errors) have no shell, only Read, Grep and Glob. `disk-auditor`, `repo-check` (git state before a cleanup or move) and `reviewer` use the shell to measure or run git, and their instructions forbid changing anything; the tool list does not enforce that, so keep Claude's tool approvals on. Claude Code offers them to the model by their own descriptions; the plugin does not point the model at them.
 

@@ -9,6 +9,7 @@ Four source files, about 1,200 lines, no dependencies. Everything runs inside Cl
 | `hooks/smart.ts` | The learner: a cost-aware bandit over (model, effort) | none |
 | `hooks/tips.ts` | Fixed-text tips and the rules for when to show one (the caller shows them as a toast) | none |
 | `agents/*.md` | Five helper subagents Claude Code offers by their descriptions; not part of the mod | none |
+| `study/report.py` (repository root) | Offline usage report with conclusions; never run by the plugin, outside the plugin folder | none (reads your transcripts when you run it) |
 
 ## Architecture
 
@@ -26,8 +27,10 @@ flowchart LR
     REG["register.ts<br/>hooks + state + ledger + decide()"]
     POL["policy.ts<br/>pure helpers"]
     SM["smart.ts<br/>learner"]
+    TP["tips.ts<br/>fixed-text tips"]
     REG --> POL
     REG --> SM
+    REG --> TP
   end
   API["Anthropic API"]
   EV -- "every event, passed on with next(e)" --> REG
@@ -79,6 +82,9 @@ classDiagram
     +kindOf(prompt) string
     +followUp(prev, next) FollowUp
   }
+  class Tips["tips.ts"] {
+    +pickTip(signals, shown) Tip
+  }
   class Opts {
     tiers : 5 x Spec
     warnPercent, warnCap
@@ -112,6 +118,7 @@ classDiagram
   }
   Register ..> Policy : uses
   Register ..> Smart : uses
+  Register ..> Tips : uses
   Register --> Opts
   Register --> Ledger : store key "ledger"
   Register --> SmartStore : store key "smart"
@@ -121,6 +128,26 @@ classDiagram
 ```
 
 Store keys: `ledger`, `models` (full model ids seen), `pacer`, `smart`. No prompt text is stored anywhere; `SmartStore` holds counts, costs, a fixed kind label and a hash of the project folder.
+
+## Which model id is sent
+
+`turn.step` receives the model Claude Code chose and may change it. The mod never invents an id it cannot justify:
+
+```mermaid
+flowchart TD
+  S["Route says family F<br/>(haiku, sonnet or opus)"] --> R{"Is the current model one<br/>the plugin recognises?"}
+  R -->|no| K["Leave the request alone"]
+  R -->|yes| Q{"Already the right family?"}
+  Q -->|yes| Same["Keep the current model id"]
+  Q -->|no| L{"Has this session run<br/>an id for F?"}
+  L -->|yes| U["Use that id"]
+  L -->|no| P{"Current id is plain<br/>claude-family-version?"}
+  P -->|yes| W["Swap the family word:<br/>same generation"]
+  P -->|"Fable / Mythos"| N["Use the known current id for F"]
+  P -->|"dated or provider id"| K
+```
+
+A dated id such as `claude-sonnet-4-5-20250929`, a provider-specific id or a company deployment name is never rewritten, because the swapped name may not exist for the other family.
 
 ## What happens in one turn
 

@@ -1,4 +1,5 @@
 """Turn Claude Code transcripts into one row per prompt. Local only; keeps no prompt text.
+(For a readable report with conclusions, use report.py.)
 
 usage: python -I extract.py [projects_dir] [out.jsonl]
 Kind and follow-up come from the plugin's own kindOf/followUp (classify.mjs, needs Node 22+).
@@ -57,12 +58,18 @@ texts, pairs = [], []
 for f in glob.glob(os.path.join(PROJECTS, '**', '*.jsonl'), recursive=True):
     cur = None
     turns = []
+    lines = []
     for line in open(f, encoding='utf8', errors='ignore'):
         try:
-            d = json.loads(line)
+            lines.append(json.loads(line))
         except ValueError:
-            continue
+            lines.append({})
+    # A request appears on several lines (one per content block) with the same usage: count it once.
+    last = {(d.get('requestId'), (d.get('message') or {}).get('id')): i for i, d in enumerate(lines) if d.get('type') == 'assistant'}
+    for i, d in enumerate(lines):
         if d.get('isSidechain'):
+            continue
+        if d.get('type') == 'assistant' and last.get((d.get('requestId'), (d.get('message') or {}).get('id'))) != i:
             continue
         t = d.get('type')
         if t == 'user':

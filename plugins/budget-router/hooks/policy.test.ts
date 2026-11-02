@@ -492,3 +492,42 @@ describe('tips in the engine', () => {
     expect(toasts.some(t => /long paste/.test(t))).toBe(false)
   })
 })
+
+describe('model ids on restricted deployments', () => {
+  // Runs one turn.step on `current` and returns the model the request would go out on.
+  async function modelFor(on: any, $: any, current: string, prompt: string, start = false) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const seen: string[] = []
+    on('turn.step', async function* (_$: unknown, e: { model: string; turnId: string; index: number }) {
+      seen.push(e.model)
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+    })
+    if (start) await $.session.start({ cwd: '' } as never).catch(() => undefined)
+    await submit($, prompt)
+    for await (const _c of $.turn.step({ turnId: 't', index: 0, model: current, effort: 'high', messageCount: 2 } as never)) { /* drain */ }
+    return seen[0]
+  }
+
+  test('a plain id is swapped within the same generation', async ($, on) => {
+    mock.store(on)
+    kit(on)
+    expect(await modelFor(on, $, 'claude-sonnet-4-5', 'hello')).toBe('claude-haiku-4-5')
+  })
+
+  test('a dated or provider-specific id is not swapped: the request stays on the model in use', async ($, on) => {
+    mock.store(on)
+    kit(on)
+    expect(await modelFor(on, $, 'claude-sonnet-4-5-20250929', 'hello')).toBe('claude-sonnet-4-5-20250929')
+  })
+
+  test('an unrecognised model is left alone', async ($, on) => {
+    mock.store(on)
+    kit(on)
+    expect(await modelFor(on, $, 'my-company-deployment', 'hello')).toBe('my-company-deployment')
+  })
+
+  test('an id the session has already run for the family is preferred', async ($, on) => {
+    mock.store(on, { models: { haiku: 'claude-haiku-4-5-20251001' } })
+    kit(on)
+    expect(await modelFor(on, $, 'claude-sonnet-4-5-20250929', 'hello', true)).toBe('claude-haiku-4-5-20251001')
+  })
+})

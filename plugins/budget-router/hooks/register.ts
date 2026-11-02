@@ -177,7 +177,6 @@ let pending: Pending | undefined
 let lastOutcome: (Pending & { ok: boolean; at: number }) | undefined
 
 const learnOn = () => o.learnMode !== 'off'
-const modelId = (f: Family) => learned[f] ?? KNOWN_IDS[f]
 const rankF = (f: Family) => FAMILIES.indexOf(f)
 const rankE = (e: Effort) => EFFORTS.indexOf(e)
 const capSpec = (s: Spec, cap: Spec): Spec => ({
@@ -187,6 +186,20 @@ const capSpec = (s: Spec, cap: Spec): Spec => ({
 const familyOf = (model: string): Family => {
   const m = model.toLowerCase()
   return m.includes('haiku') ? 'haiku' : m.includes('sonnet') ? 'sonnet' : 'opus'
+}
+const recognised = (model: string) => /haiku|sonnet|opus|fable|mythos/i.test(model)
+const aboveOpus = (model: string) => /fable|mythos/i.test(model) // priced and ranked above Opus; never a route target
+
+/**
+ * The model id to send for a family, or nothing when unsure (the request then stays on the model Claude Code chose).
+ * In order: an id this session has already run for that family; the same generation as the model in use, when its
+ * id is a plain `claude-<family>-<version>` (a dated or provider-specific id is not swapped, it may not exist for
+ * the other family); the known current id when the session runs a model above Opus (Fable, Mythos).
+ */
+function targetModel(f: Family, current: string): string | undefined {
+  if (learned[f]) return learned[f]
+  if (/^claude-(haiku|sonnet|opus)-\d+(-\d+)?$/i.test(current)) return current.replace(/haiku|sonnet|opus/i, f)
+  return /^claude-(fable|mythos)/i.test(current) ? KNOWN_IDS[f] : undefined
 }
 
 // ---- Time ---------------------------------------------------------------------------------------
@@ -530,19 +543,24 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     await noteModel($, e.model)
     if (e.agentId !== undefined) {
-      if (level === 0) return yield* next(e)
+      if (level === 0 || !recognised(e.model)) return yield* next(e)
       const cur: Spec = { family: familyOf(e.model), effort: typeof e.effort === 'string' ? e.effort : 'high' }
       // Capped like the main turn, but never pushed down to Haiku (a subagent's context is unknown).
       let cap = level >= 2 ? o.criticalCap : o.warnCap
       if (cap.family === 'haiku' && cur.family !== 'haiku') cap = { family: 'sonnet', effort: 'low' }
       const s = capSpec(cur, cap)
       if (s.family === cur.family && s.effort === cur.effort) return yield* next(e)
-      return yield* next({ ...e, model: modelId(s.family), ...(e.effort === undefined ? {} : { effort: s.effort }) })
+      const model = s.family === cur.family ? e.model : targetModel(s.family, e.model)
+      if (model === undefined) return yield* next(e)
+      return yield* next({ ...e, model, ...(e.effort === undefined ? {} : { effort: s.effort }) })
     }
     stepsNow++
     const base = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
     const spec = escalate(e, base)
-    return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
+    // Only act on a model it recognises, and only move to an id it can name safely.
+    const model = !recognised(e.model) ? undefined : spec.family === familyOf(e.model) && !aboveOpus(e.model) ? e.model : targetModel(spec.family, e.model)
+    if (model === undefined) return yield* next(e)
+    return yield* next({ ...e, model, effort: spec.effort })
   }).catch(async function* ($, e, next) {
     return yield* next(e) // a failure here leaves the request on the model Claude Code chose
   })

@@ -2,6 +2,12 @@
 
 Checked against Claude Code's own documentation on 2026-11-02 (sources at the end). Documentation changes: where a command or setting matters, confirm it with `/help` or the docs. Items marked *reasoning* follow from how Claude Code works but are not a figure the docs state.
 
+## Start here
+
+1. Read **The one idea** below (one minute).
+2. Pick two habits from **Habits** and try them for a week: `/clear` between tasks, and `/compact` before a context gets huge.
+3. Run the report (`python -I study/report.py` in the repository) to see which of the habits matter most **for your own usage**, instead of guessing.
+
 ## The one idea
 
 **Claude Code sends your whole conversation with every request.** The prompt cache makes re-reading cheaper, not free: it lasts about an hour on a subscription (five minutes on an API key, a cloud provider or usage credits). So the cost of a session is mostly *how big the conversation is* times *how many requests you make*. Everything below either shrinks the conversation, cuts the number of requests, or picks a cheaper model and effort.
@@ -69,9 +75,13 @@ budget-router shows these tips on its own (a notice, to you only, at most one ev
 | Back after a long break with a big context | The cache has expired and the whole context is re-written: `/compact` or `/clear` first (budget-router's idle notice says what it would cost) |
 | The context passes a large size | Every request re-reads it: `/compact` with a focus, or start fresh (the large-context notice) |
 
+## Measure what helps you
+
+`study/report.py` reads your local transcripts and writes one HTML page with where your usage went, your longest turns, what pauses and failed tool calls cost, and the measured cost of each effort level on each model. Its "What to change" section turns those numbers into the habits above. Run it again after a few weeks of trying a habit to see whether it moved. Nothing leaves your machine and no prompt text is kept.
+
 ## What budget-router does for you, and what stays with you
 
-- **It does:** picks a cheaper model and effort for simple prompts, spreads your weekly limit over the days, caps routes as the day fills, lowers effort when you spend faster than an even pace, warns before an expired cache is re-written, and shows these tips.
+- **It does:** picks a cheaper model and effort for simple prompts, spreads your weekly limit over the days, caps routes as the day fills, lowers effort when you spend faster than an even pace, warns before an expired cache is re-written, and shows these tips. The report is yours to run.
 - **It does not:** clear, compact or rewind for you, edit CLAUDE.md, create skills or scripts, or change your settings. Those are the habits above, and they are yours.
 
 ## Sources

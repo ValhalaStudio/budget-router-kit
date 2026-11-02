@@ -14,6 +14,10 @@ Do not paste prompts, tokens or private file paths.
 
 Security problems go through the private report in the Security tab, not a public issue (see [SECURITY.md](SECURITY.md)).
 
+## Checking what helps
+
+Run `python -I study/report.py` to see, from your own transcripts, where usage goes and what a change would affect. It is a good way to back a proposal with data. It reads only local files and writes one HTML page.
+
 ## Suggesting a change
 
 Open an issue with the feature template first, so we can agree on the idea before you write code.

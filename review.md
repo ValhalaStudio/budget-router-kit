@@ -19,6 +19,14 @@ budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts
 
 `hooks/tips.ts` holds seven fixed texts and the rules for when one applies. A tip is a toast to the person: it is never appended to the conversation or the prompt, uses only signals already in memory for the current prompt (its text and kind label, the previous turn's size and failure count, the cap level), stores nothing, shows at most one per 10 minutes and each once per session, and is switched off by the `tips` option. `CHEATSHEET.md` gives each habit with its source in Claude Code's documentation.
 
+## Model ids
+
+`turn.step` only moves a request to a model id the mod can justify: an id this session has already run for that family, or the same generation of the model in use when its id is a plain `claude-<family>-<version>`. A dated, provider-specific or unrecognised id is left alone, so a company with restricted models is never sent to a model it may not have. Covered by tests in `policy.test.ts` ("model ids on restricted deployments").
+
+## Outside the plugin
+
+`study/` (repository root, not in the plugin folder the directory fetches) holds offline scripts for the author's own analysis, including `report.py`, which turns local transcripts and the plugin store into an HTML report. The plugin never runs them and nothing in them is sent anywhere.
+
 ## The six hooks
 
 | Hook | Changes |
