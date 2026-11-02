@@ -1,6 +1,6 @@
 # Notes for the directory review (0.11.0)
 
-budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
+budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 3 source files (`register.ts` wiring and state, `policy.ts` pure routing helpers, `smart.ts` the learner), about 1,100 lines. `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
 
 ## What 0.11.0 removed
 
@@ -12,6 +12,8 @@ budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts
 | The decision log | Fed `/route why` | Less stored data; old logs are deleted at start. |
 | Opt-in sharing of learner counts (export, invitation, issue template, merge script, shipped prior) | Improving the learner's starting point | Nothing in the plugin is about sending data. |
 | Author's study scripts inside the plugin folder (0.10.8 already moved them) | Offline analysis | The plugin folder holds no script. |
+| A second, older learner (`learnMode: classic`) and the burn-rate forecast notice | Superseded by the cost-aware learner and the pace controller | One learner, less code; their stored data is deleted on load. |
+| 18 expert options (model ids, price table, learner tuning, escalation and pace thresholds, cache and idle thresholds) | Tuning | Fixed named constants at the top of `register.ts`; 18 options remain. |
 
 ## The six hooks
 
@@ -39,7 +41,7 @@ Engine calls: `$.store`, `$.ui.status`, `$.ui.toast`, `$.session.usage`, `$.sess
 |---|---|
 | 1A Usage Policy; Consumer Terms on automation and limits | Runs only inside the user's own Claude Code session and only on turns the user starts; makes no requests of its own; never bypasses, resets or pools a usage limit. It keeps use below the limit. |
 | 1C safeguards and system instructions | Sets model and effort only. Adds nothing to prompts or the system prompt; the one appended system note states that a usage cap applies, shown to the user too. |
-| 1E/1G data, conversation content, profiles | Prompt text is read in memory to choose the route and never stored. Stored: budget ledger, pace samples, and learner counts keyed by a fixed kind label, a fixed topic label and a hash of the project folder; learner weights use prompt shape only (length, code, file name, context size, previous turn size). Version 1 weights, which also used hashed words, are dropped on load. |
+| 1E/1G data, conversation content, profiles | Prompt text is read in memory to choose the route and never stored. Stored: budget ledger, pace-controller state, and learner counts keyed by a fixed kind label and a hash of the project folder; learner weights use prompt shape only (length, code, file name, context size, previous turn size). Version 1 weights, which also used hashed words, are dropped on load. |
 | 2B descriptions match functionality | `scout` and `log-triage` have no shell. `disk-auditor`, `repo-check` and `reviewer` say they use the shell and are instructed not to change anything. |
 | 2F/2G no fetched or hidden instructions | Nothing is fetched; source is plain TypeScript; no encoded text. |
 | 3A privacy policy | `plugins/budget-router/PRIVACY.md` (use as the listing's privacy policy link). |

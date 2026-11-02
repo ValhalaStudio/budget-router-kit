@@ -1,5 +1,6 @@
-// Cost-aware learner for budget-router: a contextual bandit over (model, effort) arms.
-// Pure functions only (no engine calls), so tests can run them directly.
+// The learner: a cost-aware contextual bandit over (model, effort) arms. Pure functions, no engine calls.
+// Sections: arms, decaying cells, shape features, Beta posterior, prices, the choice, store, outcome signals.
+// It stores counts, costs and 256 weights over prompt shape; never prompt text or words.
 
 import type { Family } from './policy'
 
@@ -28,7 +29,7 @@ export const ARMS: readonly Arm[] = [
 
 export const armName = (i: number): string => `${ARMS[i]?.family ?? '?'}·${ARMS[i]?.effort ?? '?'}`
 
-/** Nearest arm that is not dearer than the spec (same idea as the old ladderIndex). */
+/** Nearest arm of the same family that is not dearer than the spec. */
 export function armIndex(spec: Arm): number {
   const exact = ARMS.findIndex(a => a.family === spec.family && a.effort === spec.effort)
   if (exact >= 0) return exact
@@ -65,9 +66,9 @@ export function flipCell(cell: Cell | undefined, toOk: boolean): Cell | undefine
   return cell.s >= 1 ? { ...cell, s: cell.s - 1, f: cell.f + 1 } : cell
 }
 
-// -- Features and the logistic prior -----------------------------------------------------
+// -- Shape features and the logistic prior ------------------------------------------------
 
-export const DIM = 256
+const DIM = 256
 
 function hash(s: string): number {
   let h = 2166136261
@@ -167,11 +168,11 @@ export function sampleBeta(a: number, b: number, rand: () => number = Math.rando
 // -- Prices and cost -------------------------------------------------------------------
 
 export type Price = { inp: number; out: number; read: number; write: number } // USD per million tokens
-/** Estimates, not an invoice. Override with the `priceTable` option when the real prices differ. */
+/** Fallback list prices per family (estimates, not an invoice); `priceFor` refines them by model id. */
 export const DEFAULT_PRICES: Record<Family, Price> = {
-  haiku: { inp: 1, out: 5, read: 0.1, write: 1.25 }, // Haiku 4.5, the id the router resolves to
-  sonnet: { inp: 2, out: 10, read: 0.2, write: 2.5 }, // Sonnet 5.5
-  opus: { inp: 4, out: 20, read: 0.2, write: 5 }, // Opus 5.5
+  haiku: { inp: 1, out: 5, read: 0.1, write: 1.25 },
+  sonnet: { inp: 2, out: 10, read: 0.2, write: 2.5 },
+  opus: { inp: 4, out: 20, read: 0.2, write: 5 },
 }
 
 /** Price for the model id that actually ran (list prices, cached 2026-10-06; cache writes assumed 1.25x input). */
@@ -270,9 +271,8 @@ export function pickArm(inp: PickInput): Choice {
   // dominance: drop an arm that is dearer than another and no more likely to work
   const kept = scores.filter(s => !scores.some(o => o !== s && cost(o.arm) <= cost(s.arm) && o.p >= s.p && (cost(o.arm) < cost(s.arm) || o.p > s.p)))
   const best = (kept[0] ?? scores[0])!
-  const explored = false
-  const why = best.arm === inp.base ? 'smart: rule choice holds' : best.arm < inp.base ? `smart: ${armName(best.arm)} (p≈${Math.round(best.p * 100)}%)${explored ? ', exploring' : ''}` : `smart: ${armName(best.arm)} (cheaper step has been failing here)`
-  return { arm: best.arm, why, explored, scores }
+  const why = best.arm === inp.base ? 'smart: rule choice holds' : best.arm < inp.base ? `smart: ${armName(best.arm)} (p≈${Math.round(best.p * 100)}%)` : `smart: ${armName(best.arm)} (cheaper step has been failing here)`
+  return { arm: best.arm, why, explored: false, scores }
 }
 
 // -- Store ------------------------------------------------------------------------------
@@ -349,16 +349,14 @@ export function fadeFamily(s: SmartStore, family: Family): SmartStore {
 
 // -- Outcome signals -----------------------------------------------------------------------
 
+/** A reply that says the last answer missed. */
+export const REDO_RE = /^\s*(no\b|nope|wrong|that'?s (not|wrong)|not what i|still (broken|failing|not|wrong)|again\b|try again|redo|you (missed|forgot|didn'?t)|doesn'?t work|didn'?t work|it'?s still)/i
 export const THANKS_RE = /^\s*(thanks|thank you|thx|perfect|great|works|it works|nice|awesome|cool|that worked|good job|looks good|lgtm|done)/i
 /** Weak acceptance: only when that is the whole message ("ok", "yes"), not the start of a new request. */
 export const WEAK_ACK_RE = /^\s*(ok(ay)?|yes|yep|good|right)[.! ]*$/i
 /** A message that accepts the last answer but carries a complaint is not an acknowledgment. */
 export const COMPLAINT_RE = /\b(but|still|not|wrong|fail(s|ed|ing)?|error|broken|again|instead|except)\b|n't/i
 
-/**
- * The shape of a prompt, which is what predicts how much work follows. Real prompts are terse, so
- * topic keywords miss most of them; the first words and the length say more.
- */
 /** First words that mark a prompt as a pasted terminal line (only used to label the prompt's shape). */
 const SHELL_FIRST_WORDS = new Set([
   'git', 'npm', 'python', 'docker', 'winget', 'kubectl', 'claude', 'cd', 'ls', 'sudo', 'ssh',
@@ -366,6 +364,7 @@ const SHELL_FIRST_WORDS = new Set([
   'curl',
 ])
 
+/** A fixed label for the shape of a prompt (go, paste, shell, research, question, change, chat, ask); the learner pools by it. */
 export function kindOf(text: string): string {
   const t = text.trim()
   const lower = t.toLowerCase()

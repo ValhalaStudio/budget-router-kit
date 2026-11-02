@@ -89,107 +89,29 @@
       "description": "Apply the same caps when the 5-hour rate-limit window passes the thresholds (never locks on it)",
       "default": true
     },
-    "haikuMaxContext": {
-      "type": "number",
-      "title": "Haiku context ceiling (tokens)",
-      "description": "Above this conversation size Haiku is never chosen (Haiku 5.5 is priced at its low rate up to a 100k prompt)",
-      "default": 100000
-    },
-    "stickyContext": {
-      "type": "number",
-      "title": "Sticky above (tokens)",
-      "description": "Above this conversation size a one-step model change is skipped, since switching models re-caches the whole context",
-      "default": 60000
-    },
-    "haikuModel": {
-      "type": "string",
-      "title": "Haiku model id",
-      "description": "Alias or full model id for Haiku turns",
-      "default": "haiku"
-    },
-    "sonnetModel": {
-      "type": "string",
-      "title": "Sonnet model id",
-      "description": "Alias or full model id for Sonnet turns",
-      "default": "sonnet"
-    },
-    "opusModel": {
-      "type": "string",
-      "title": "Opus model id",
-      "description": "Alias or full model id for Opus turns",
-      "default": "opus"
-    },
     "unrealRules": {
       "type": "boolean",
       "title": "Unreal build rules",
       "description": "Prompts about UBT, linker, cook or packaging errors never run on the trivial or light tier",
       "default": true
     },
-    "cacheWarmMinutes": {
-      "type": "number",
-      "title": "Prompt cache warm for (minutes)",
-      "description": "A model switch on a long conversation is only avoided while the last turn ended less than this long ago (the cache lives about an hour on a subscription)",
-      "default": 55
-    },
-    "paceWarnHours": {
-      "type": "number",
-      "title": "Pace warning horizon (hours)",
-      "description": "Warn once a day when the last 90 minutes' pace would use up today's budget within this many hours",
-      "default": 3
-    },
     "escalateOnTrouble": {
       "type": "boolean",
       "title": "Escalate when a turn goes badly",
-      "description": "Raise effort, and after a longer run of failed tool calls the model, for the rest of that turn",
+      "description": "Raise effort after 3 failed tool calls in one turn, and the model one step after 6",
       "default": true
-    },
-    "escalateAfterErrors": {
-      "type": "number",
-      "title": "Raise effort after (failed tool calls)",
-      "description": "Failed tool calls in one turn before effort goes up one notch",
-      "default": 3
-    },
-    "escalateModelAfterErrors": {
-      "type": "number",
-      "title": "Raise the model after (failed tool calls)",
-      "description": "Failed tool calls in one turn before the model goes up one step (once per turn)",
-      "default": 6
     },
     "paceControl": {
       "type": "boolean",
       "title": "Pace control",
-      "description": "A PI controller sheds one or two cost steps while you spend faster than an even day",
+      "description": "Route one or two cost steps cheaper while today's use runs ahead of an even spread over 08:00-24:00",
       "default": true
-    },
-    "dayStartHour": {
-      "type": "number",
-      "title": "Active day starts (hour)",
-      "description": "Local hour the even-pace line starts at",
-      "default": 8
-    },
-    "dayEndHour": {
-      "type": "number",
-      "title": "Active day ends (hour)",
-      "description": "Local hour the even-pace line reaches 100% of the daily budget",
-      "default": 24
-    },
-    "paceSlack": {
-      "type": "number",
-      "title": "Pace slack (percentage points)",
-      "description": "How far ahead of the even-pace line you may be before the controller reacts",
-      "default": 15
     },
     "idleGuard": {
       "type": "string",
       "title": "Idle cache guard",
-      "description": "off, or warn (a notice when a long pause means the context must be re-written). Never holds a prompt",
+      "description": "warn (a notice when a pause of over 55 minutes means a context of 60k+ tokens is re-written from scratch) or off. Never holds a prompt",
       "default": "warn"
-    },
-    "idleMinContext": {
-      "type": "number",
-      "title": "Idle guard minimum context",
-      "description": "Only warn when the context is at least this many tokens",
-      "default": 60000
     },
     "nudgeContext": {
       "type": "number",
@@ -197,41 +119,11 @@
       "description": "Notice each time the context grows past a multiple of this many tokens (0 turns it off)",
       "default": 150000
     },
-    "learn": {
-      "type": "boolean",
-      "title": "Learn from outcomes",
-      "description": "Track which model and effort worked for each kind of prompt and move one step on evidence",
-      "default": true
-    },
     "learnMode": {
       "type": "string",
       "title": "Learner mode",
-      "description": "live (cost-aware learner picks the model and effort), shadow (only logs what it would pick), classic (old success-rate learner) or off",
+      "description": "live (the learner may move the model and effort one step on evidence), shadow (it learns but never changes the route) or off",
       "default": "live"
-    },
-    "priceTable": {
-      "type": "string",
-      "title": "Learner price table",
-      "description": "JSON of USD per million tokens per family, for example {\"opus\":{\"inp\":4,\"out\":20,\"read\":0.2,\"write\":5}}; blank uses list prices by model id",
-      "default": ""
-    },
-    "qualityWeight": {
-      "type": "number",
-      "title": "Learner quality weight",
-      "description": "Dollars of pain assigned to a failed turn while the daily budget is full; shrinks as the budget is used up",
-      "default": 0.05
-    },
-    "learnMinSamples": {
-      "type": "number",
-      "title": "Learner minimum samples",
-      "description": "Turns needed at a step before the learner trusts its record",
-      "default": 8
-    },
-    "learnExplore": {
-      "type": "number",
-      "title": "Learner exploration",
-      "description": "Chance (0 to 1) of trying one cheaper step where the current one has worked well",
-      "default": 0.1
     }
   }
 }

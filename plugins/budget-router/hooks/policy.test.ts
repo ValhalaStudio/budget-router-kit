@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { addPace, isUnrealBuildPrompt, projectExhaustion, shouldStick } from './policy'
+import { isUnrealBuildPrompt, shouldStick } from './policy'
 import { PACER_DEFAULTS, applyEscalation, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, targetPercent } from './policy'
-import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, learnedMove, recordOutcome, sizeBucket, sizeNudgeText, stepReadUsd, wilson } from './policy'
-import type { Learned } from './policy'
+import { idleRebuild, idleText, sizeBucket, sizeNudgeText, stepReadUsd } from './policy'
+import { REDO_RE } from './smart'
 
 // --- pure helpers --------------------------------------------------------------------------
 
@@ -24,29 +24,6 @@ describe('cache-aware switching', () => {
     expect(shouldStick({ ...base, sinceLastTurnMs: 70 * 60_000 })).toBe(false) // cache already cold
     expect(shouldStick({ ...base, ctx: 20_000, sinceLastTurnMs: 1000 })).toBe(false)
     expect(shouldStick({ ...base, stepDistance: 2, sinceLastTurnMs: 1000 })).toBe(false)
-  })
-})
-
-describe('pace forecast', () => {
-  const min = 60_000
-  test('keeps the newest samples and projects when the day runs out', async () => {
-    let s = addPace([], { t: 0, daily: 10 })
-    s = addPace(s, { t: 1 * min, daily: 11 }) // within 3 min: replaces
-    expect(s.length).toBe(1)
-    s = addPace(s, { t: 30 * min, daily: 20 })
-    s = addPace(s, { t: 60 * min, daily: 30 })
-    expect(s.length).toBe(3)
-    const pr = projectExhaustion(s, 60 * min)
-    expect(Math.round(pr?.ratePerHour ?? 0)).toBe(19) // 11 -> 30 over 59 minutes
-    expect(pr?.at).toBeGreaterThan(60 * min)
-    expect(Math.round(((pr?.at ?? 0) - 60 * min) / min)).toBe(217) // 70 points left at ~19/h
-  })
-
-  test('says nothing with too little data and calm usage reports no end time', async () => {
-    expect(projectExhaustion([{ t: 0, daily: 5 }], 1000)).toBeUndefined()
-    expect(projectExhaustion([{ t: 0, daily: 5 }, { t: 5 * min, daily: 9 }], 5 * min)).toBeUndefined()
-    const calm = projectExhaustion([{ t: 0, daily: 5 }, { t: 60 * min, daily: 5.2 }], 60 * min)
-    expect(calm?.at).toBeUndefined()
   })
 })
 
@@ -125,9 +102,6 @@ describe('escalation when a turn goes badly', () => {
   })
 })
 
-// Test values that look private are assembled here so no file holds one whole.
-const fake = (...parts: string[]) => parts.join('')
-
 describe('ghost-token guard', () => {
   const warm = 55 * 60_000
   test('warns only when the cache has expired and the context is big enough', async () => {
@@ -150,56 +124,11 @@ describe('ghost-token guard', () => {
   })
 })
 
-describe('learner', () => {
-  test('buckets by tier and topic', async () => {
-    expect(bucketOf('deep', 'refactor the module and add a test')).toBe('deep|code')
-    expect(bucketOf('light', 'commit and push the branch')).toBe('light|git')
-    expect(bucketOf('standard', 'fix the Unreal build error')).toBe('standard|unreal')
-    expect(bucketOf('trivial', 'hello')).toBe('trivial|general')
-  })
-
-  test('Wilson interval tightens with data', async () => {
-    expect(wilson(0, 0)).toEqual({ lo: 0, hi: 1 })
-    expect(wilson(9, 10).lo).toBeLessThan(wilson(90, 100).lo)
-    expect(wilson(1, 10).hi).toBeLessThan(0.4)
-  })
-
-  test('outcomes add up, and a redo flips the last success', async () => {
-    let l: Learned = {}
-    l = recordOutcome(l, 'b', 3, true)
-    l = recordOutcome(l, 'b', 3, false)
-    expect(l.b?.['3']).toEqual({ s: 1, f: 1 })
-    l = flipOutcome(l, 'b', 3)
-    expect(l.b?.['3']).toEqual({ s: 0, f: 2 })
-    expect(flipOutcome(l, 'b', 3)).toBe(l)
+describe('redo replies', () => {
+  test('a reply that says the last answer missed', async () => {
     expect(REDO_RE.test('no, that is wrong')).toBe(true)
     expect(REDO_RE.test('still failing')).toBe(true)
     expect(REDO_RE.test('now add the readme')).toBe(false)
-  })
-
-  const never = { minSamples: 8, target: 0.85, explore: 0.1, rand: () => 0.99 }
-  const always = { ...never, rand: () => 0 }
-
-  test('no record, no move', async () => {
-    expect(learnedMove({}, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
-    expect(learnedMove({ b: { '3': { s: 2, f: 3 } } }, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
-  })
-
-  test('a step that keeps failing moves up one', async () => {
-    const m = learnedMove({ b: { '3': { s: 2, f: 10 } } }, 'b', 3, LADDER_SIZE, never)
-    expect(m?.steps).toBe(-1)
-    expect(learnedMove({ b: { '5': { s: 0, f: 20 } } }, 'b', 5, LADDER_SIZE, never)).toBeUndefined() // already the top
-  })
-
-  test('a step that nearly always works may try the cheaper one, and keeps it once proven', async () => {
-    const strong: Learned = { b: { '3': { s: 20, f: 0 } } }
-    expect(learnedMove(strong, 'b', 3, LADDER_SIZE, never)).toBeUndefined()
-    expect(learnedMove(strong, 'b', 3, LADDER_SIZE, always)?.steps).toBe(1)
-    const proven: Learned = { b: { '3': { s: 20, f: 0 }, '2': { s: 14, f: 0 } } }
-    expect(learnedMove(proven, 'b', 3, LADDER_SIZE, never)?.steps).toBe(1)
-    const shaky: Learned = { b: { '3': { s: 20, f: 0 }, '2': { s: 5, f: 5 } } }
-    expect(learnedMove(shaky, 'b', 3, LADDER_SIZE, always)).toBeUndefined()
-    expect(learnedMove({ b: { '0': { s: 30, f: 0 } } }, 'b', 0, LADDER_SIZE, always)).toBeUndefined() // nothing cheaper
   })
 })
 
@@ -378,63 +307,28 @@ describe('the pin option', () => {
 })
 
 describe('pace control', () => {
-  const rateLimits = [
-    { kind: 'seven_day', percentUsed: 30, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
-    { kind: 'five_hour', percentUsed: 5, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
-  ]
+  const ahead = { pacer: { i: 50, u: 2, day: today() } } // the controller's saved state: two steps to shed today
 
-  test('spending ahead of the even-pace line lowers the next route by up to two steps', { options: { paceSlack: -200 } }, async ($, on) => {
+  test('spending ahead of the even-pace line lowers the next route by up to two steps', async ($, on) => {
     const status: string[] = []
-    const st = watched(on)
+    mock.store(on, ahead)
     kit(on, { status })
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await $.session.start({ cwd: '' } as never).catch(() => undefined)
     await submit($, DEEP)
     expect(last(status)).toContain('sonnet·low')
-    expect(((await st.get('pacer')) as { u: number }).u).toBe(2)
   })
 
-  test('with pace control off the route is untouched', { options: { paceSlack: -200, paceControl: false } }, async ($, on) => {
+  test('with pace control off the route is untouched', { options: { paceControl: false } }, async ($, on) => {
     const status: string[] = []
-    mock.store(on)
+    mock.store(on, ahead)
     kit(on, { status })
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await $.session.start({ cwd: '' } as never).catch(() => undefined)
     await submit($, DEEP)
     expect(last(status)).toContain('opus·high')
   })
 })
 
-describe('notices', () => {
-  test('a long pause with a big context gets a notice with the cost', { options: { cacheWarmMinutes: -1, idleMinContext: 1 } }, async ($, on) => {
-    const toasts: string[] = []
-    mock.store(on)
-    kit(on, { toasts })
-    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
-    await $.turn.complete(done())
-    await submit($, DEEP)
-    expect(toasts.some(t => t.includes('re-writes about 300k'))).toBe(true)
-  })
-})
-
 describe('learning in the engine', () => {
-  test('a step with a poor record here is moved up one', { options: { learnMode: 'classic', paceControl: false } }, async ($, on) => {
-    const status: string[] = []
-    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
-    kit(on, { status })
-    await submit($, DEEP)
-    expect(last(status)).toContain('opus·xhigh')
-  })
-
-  test('finished turns are recorded, a redo counts against the last one', { options: { learnMode: 'classic', paceControl: false } }, async ($, on) => {
-    const st = watched(on)
-    kit(on)
-    await submit($, DEEP)
-    await $.turn.complete(done())
-    const cell = async () => ((await st.get('bandit')) as Learned)['deep|code']?.['4']
-    expect(await cell()).toEqual({ s: 1, f: 0 })
-    await submit($, 'no, that is wrong, try again')
-    expect(await cell()).toEqual({ s: 0, f: 1 })
-  })
-
   test('the smart learner records a turn with its cost, and a redo flips it', { options: { paceControl: false } }, async ($, on) => {
     const st = watched(on)
     kit(on)
@@ -450,7 +344,7 @@ describe('learning in the engine', () => {
     expect(s.cells.g?.['opus·high']?.f).toBeGreaterThan(0.5)
   })
 
-  test('shadow mode never changes the route', { options: { paceControl: false, learnMode: 'shadow', learnExplore: 1 } }, async ($, on) => {
+  test('shadow mode never changes the route', { options: { paceControl: false, learnMode: 'shadow' } }, async ($, on) => {
     const status: string[] = []
     mock.store(on)
     kit(on, { status })
@@ -462,13 +356,17 @@ describe('learning in the engine', () => {
     expect(last(status)).toContain('opus·high')
   })
 
-  test('the learner can be switched off', { options: { learn: false } }, async ($, on) => {
-    const status: string[] = []
-    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
-    kit(on, { status })
-    await submit($, DEEP)
-    expect(last(status)).toContain('opus·high')
-  })
+  for (const options of [{ learnMode: 'off' }, { learn: false }]) {
+    test(`the learner can be switched off (${JSON.stringify(options)})`, { options }, async ($, on) => {
+      const status: string[] = []
+      const st = watched(on)
+      kit(on, { status })
+      await submit($, DEEP)
+      await $.turn.complete(done())
+      expect(last(status)).toContain('opus·high')
+      expect(await st.get('smart')).toBeUndefined()
+    })
+  }
 })
 
 describe('daily budget at the edges of the weekly window', () => {

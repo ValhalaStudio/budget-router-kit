@@ -22,7 +22,7 @@ Claude subscriptions only have a 5-hour and a weekly limit. budget-router splits
 - **Pace control.** A small controller compares today's use with an even spread across your day (08:00 to 24:00 by default) and steps routes one or two notches cheaper while you are ahead. "Think hard" prompts and a pinned route are left alone.
 - **Escalation.** A turn with 3 failed tool calls gets one more notch of effort; 6 also raises the model one step, once per turn.
 - **Ghost-token guard.** Most of the cost of a long session is context re-read or re-written from the cache. After a long pause a notice shows what re-writing the context will cost (`idleGuard`: `warn` or `off`; it never holds a prompt), and a notice appears when the context passes each multiple of `nudgeContext`.
-- **Learner.** A cost-aware bandit over model and effort. It records, per kind of work and per project, whether each turn went well (few failed tool calls; you did not redo or rephrase it; a thanks counts as a win) and what the turn cost in tokens. It never leaves the rule-based choice without evidence: a cheaper step needs a record that it works here (or a rare, capped exploration on ordinary prompts, never on deep or max ones), and a dearer step needs a record that the rule choice keeps failing. As the daily budget runs out it weighs cost more heavily. Old evidence fades over about two weeks. Modes via `learnMode`: `live` (default), `shadow` (records, never changes the route), `classic` (a simpler success-rate learner) or `off`. Costs are estimates from list prices by model id (override with `priceTable`).
+- **Learner.** A cost-aware bandit over model and effort. It records, per kind of work and per project, whether each turn went well (few failed tool calls; you did not redo or rephrase it; a thanks counts as a win) and what the turn cost in tokens. It never leaves the rule-based choice without evidence: a cheaper step needs a record that it works here (or a rare, capped exploration on ordinary prompts, never on deep or max ones), and a dearer step needs a record that the rule choice keeps failing. As the daily budget runs out it weighs cost more heavily. Old evidence fades over about two weeks, and a new model id halves the record for that family. `learnMode`: `live` (default), `shadow` (learns, never changes the route) or `off`. Costs are estimates from list prices by model id.
 - **Pinning.** The `pin` option fixes the route: a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`). `auto` (the default) routes every prompt. Usage caps still apply on top of a pin.
 - **Helper agents** (in `agents/`): `scout` (wide searches) and `log-triage` (cuts a long build, cook or test log to its errors) have no shell, only Read, Grep and Glob. `disk-auditor`, `repo-check` (git state before a cleanup or move) and `reviewer` use the shell to measure or run git, and their instructions forbid changing anything; the tool list does not enforce that, so keep Claude's tool approvals on. Claude Code offers them to the model by their own descriptions; the plugin does not point the model at them.
 
@@ -44,7 +44,7 @@ Needs Claude Code 2.1.287 or newer and a Claude subscription (Pro or Max). On an
 - **Runs: no programs.**
 - **Writes: no files.** Everything it keeps goes to the plugin store. It does not edit any build, start-up, settings or instructions file and does not change Claude Code's settings.
 - **Adds to the conversation:** nothing to your prompts or to the system prompt. When a usage cap starts, and once at the wrap-up point, it appends one short system note saying so, so the model knows it is on a cheaper model. The same text is shown to you as a notice.
-- **Stores locally** (the plugin store on your machine): the budget ledger, model ids seen, burn-rate samples, the pace controller state, and the learner's counts. No prompt text. See [PRIVACY.md](PRIVACY.md).
+- **Stores locally** (the plugin store on your machine): the budget ledger, model ids seen, the pace controller state, and the learner's counts. No prompt text. See [PRIVACY.md](PRIVACY.md).
 - **No telemetry.**
 
 ## What this mod can decide for you
@@ -56,6 +56,8 @@ This plugin is a mod (a hooks module), so here is plainly what it can do with th
 **It takes no other decision.** It never refuses, holds, drops or rewrites a prompt, a tool call or a subagent, and never approves or denies a permission request. It registers no tools, commands or agents of its own, stands in for no tool, and adds nothing to the prompt or the system prompt. It does not touch the permission mode, Remote Control, settings, agent registration, command execution or file writes.
 
 ## What each hook does
+
+Diagrams of the architecture, the types, one turn, how a route is decided and the budget states are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Hook | What it does | What it changes |
 |---|---|---|
@@ -81,7 +83,7 @@ No account, sign-in or test data is needed: install the plugin and use Claude Co
 - **A prompt was refused.** Not by budget-router, which never refuses a prompt. If Claude Code reports a usage limit, that is Anthropic's own limit.
 - **The model never changes.** The `pin` option may be set: set it back to `auto` in `/config`. In a long conversation a one-step model switch is skipped while the cache is warm.
 - **No budget in the status bar.** The rate-limit readings arrive after the first reply, and only on a Claude subscription.
-- **No cache or idle notices.** They need a context of at least `idleMinContext` (60,000 by default) and a pause longer than `cacheWarmMinutes`.
+- **No cache or idle notices.** The idle notice needs a context of at least 60,000 tokens and a pause of over 55 minutes.
 - **Too many notices.** Set `idleGuard` to `off`, `nudgeContext` to 0 or `wrapUpPercent` to 0 in `/config`.
 - **Start over.** See "Deleting it" in [PRIVACY.md](PRIVACY.md).
 - **Still stuck.** Open an issue: https://github.com/ValhalaStudio/budget-router-kit/issues

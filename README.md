@@ -21,7 +21,7 @@ Keyword rules label each prompt, and nothing is sent anywhere. On long conversat
 
 The status bar under the prompt shows the route, the day / 5-hour / week percentages and what the learner has saved. It covers Claude Code only, not claude.ai chat in the browser or desktop app.
 
-The plugin itself is small on purpose: one hooks module with six hooks, no commands, no registered tools, nothing added to your prompts, no file or network access. [plugins/budget-router/README.md](plugins/budget-router/README.md) lists every hook and exactly what it reads and changes.
+The plugin itself is small on purpose: one hooks module with six hooks, no commands, no registered tools, nothing added to your prompts, no file or network access. [plugins/budget-router/README.md](plugins/budget-router/README.md) lists every hook and exactly what it reads and changes, and [ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md) has the architecture, class, sequence and decision diagrams.
 
 ## Requirements
 
