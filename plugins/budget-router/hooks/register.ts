@@ -4,7 +4,9 @@
 // It registers no tools or commands, adds nothing to prompts, and passes every event on.
 // Reading order: types, fixed values, options, session state, budget ledger, route decision, notices, hooks.
 // See ARCHITECTURE.md for diagrams.
-import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
+import { absorb, pressure, readLedger } from './ledger'
+import type { Ledger, Pressure } from './ledger'
 import { EFFORT_RANK, FAMILY_RANK, applyEscalation, escalationFor, idleRebuild, idleText, isUnrealBuildPrompt, pacerStep, paceSteps, shiftLadder, shouldStick, sizeBucket, sizeNudgeText, targetPercent } from './policy'
 import type { EffortName as Effort, Family, LadderSpec as Spec, PacerState } from './policy'
 import { ARMS, DEFAULT_PRICES, REDO_RE, armIndex, armName, correct, emptyStore, exploresLeft, fadeFamily, features, followUp, kindOf, noteExplore, pickArm, priceFor, record, scopeOf, stepBucket, turnCostUsd } from './smart'
@@ -17,30 +19,11 @@ type Tier = 'trivial' | 'light' | 'standard' | 'deep' | 'max'
 type Route = Spec & { tier: Tier; why: string }
 type Pin = { tier?: Tier; spec?: Spec }
 
-/** Today's share of the weekly limit, in the weekly window's own percent points. Kept in the store so every session sees it. */
-type Ledger = {
-  day: string
-  windowReset: string
-  windowStartPct: number
-  carry: number
-  lastPct: number
-  budgetPts: number
-  fiveHourPct: number
-  fiveHourReset?: string
-  alerted: number
-  wrapped?: boolean // the wrap-up notice was given today
-  seenAt: number
-}
-
-/** Where today stands: percent of the daily budget used, the 5-hour and weekly windows, and the cap level. */
-type Pressure = { daily: number; five: number; week: number; usedPts: number; budgetPts: number; level: 0 | 1 | 2 | 3 }
-
 // ---- Fixed values -----------------------------------------------------------------------------
 
 const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
 const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const TIERS: readonly Tier[] = ['trivial', 'light', 'standard', 'deep', 'max']
-const DAY_MS = 86_400_000
 
 /** turn.step needs full model ids; ids seen on real requests replace these. */
 const KNOWN_IDS: Record<Family, string> = { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' }
@@ -255,46 +238,8 @@ async function detectProject($: EngineInterface) {
 
 // ---- Daily budget ledger ------------------------------------------------------------------------
 
-/** Folds a rate-limit reading into the ledger. The first reading of a day sets the day's budget. */
-function absorb(prev: Ledger | undefined, limits: readonly SessionRateLimit[], now: number): Ledger | undefined {
-  const week = limits.find(l => l.kind === 'seven_day')
-  const five = limits.find(l => l.kind === 'five_hour')
-  if (!week) return prev && five ? { ...prev, fiveHourPct: five.percentUsed, fiveHourReset: five.resetsAt, seenAt: now } : prev
-  const pct = week.percentUsed
-  const reset = week.resetsAt ?? prev?.windowReset ?? new Date(now + 7 * DAY_MS).toISOString()
-  const resetMs = Date.parse(reset)
-  const daysLeft = Math.max(1, Math.ceil((resetMs - now) / DAY_MS))
-  const day = localDay(now)
-  const sameWindow = prev !== undefined && Math.abs(Date.parse(prev.windowReset) - resetMs) < 6 * 3_600_000 && pct + 3 >= prev.lastPct
-  let l: Ledger
-  if (!prev || prev.day !== day) {
-    // A new day may spend an even share of what is left of the week, so a quiet day leaves more for the next.
-    l = { day, windowReset: reset, windowStartPct: pct, carry: 0, lastPct: pct, budgetPts: Math.max(0.5, (100 - pct) / daysLeft), fiveHourPct: 0, alerted: 0, seenAt: now }
-  } else if (!sameWindow) {
-    // The weekly window reset during the day: keep what today spent, grant at least an even share of the new week.
-    l = { ...prev, carry: prev.carry + Math.max(0, prev.lastPct - prev.windowStartPct), windowStartPct: 0, budgetPts: Math.max(prev.budgetPts, 100 / daysLeft) }
-  } else {
-    l = { ...prev }
-  }
-  l.lastPct = pct
-  l.windowReset = reset
-  l.fiveHourPct = five?.percentUsed ?? 0
-  l.fiveHourReset = five?.resetsAt
-  l.seenAt = now
-  return l
-}
-
-function pressure(l: Ledger | undefined, now: number): Pressure {
-  if (!l || l.day !== localDay(now)) return { daily: 0, five: 0, week: l?.lastPct ?? 0, usedPts: 0, budgetPts: l?.budgetPts ?? 0, level: 0 }
-  const usedPts = l.carry + Math.max(0, l.lastPct - l.windowStartPct)
-  const daily = l.budgetPts > 0 ? (usedPts / l.budgetPts) * 100 : 0
-  const five = l.fiveHourReset && Date.parse(l.fiveHourReset) > now ? l.fiveHourPct : 0
-  const worst = Math.max(daily, o.includeFiveHour ? five : 0)
-  const lvl = daily >= 100 ? 3 : worst >= o.criticalPercent ? 2 : worst >= o.warnPercent ? 1 : 0
-  return { daily, five, week: l.lastPct, usedPts, budgetPts: l.budgetPts, level: lvl }
-}
-
-const loadLedger = async ($: EngineInterface) => (await $.store.get(LEDGER_KEY)) as Ledger | undefined
+const loadLedger = async ($: EngineInterface) => readLedger(await $.store.get(LEDGER_KEY))
+const pressureAt = (l: Ledger | undefined, now: number) => pressure(l, now, localDay(now), o)
 
 /** Pace control: compares today's use with an even spread over the active hours. */
 async function pacerUpdate($: EngineInterface, p: Pressure, now: number) {
@@ -459,7 +404,7 @@ export const register: Register = (on, options) => {
     ])
     learned = (models as typeof learned | undefined) ?? {}
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
-    const p = pressure(ledger as Ledger | undefined, Date.now())
+    const p = pressureAt(readLedger(ledger), Date.now())
     level = p.level
     showStatus($, p)
     return next(e)
@@ -480,9 +425,9 @@ export const register: Register = (on, options) => {
     }
     const now = Date.now()
     const prev = await loadLedger($)
-    const l = absorb(prev, e.rateLimits, now)
+    const l = absorb(prev, e.rateLimits, now, localDay(now))
     if (l) {
-      const p = pressure(l, now)
+      const p = pressureAt(l, now)
       if (p.level > l.alerted) {
         notify($, capNotice(p, now), 20_000)
         l.alerted = p.level
@@ -502,7 +447,7 @@ export const register: Register = (on, options) => {
   // Reads the typed prompt to choose the turn's route. The prompt goes on exactly as received.
   on('prompt.submit', async ($, e, next) => {
     const now = Date.now()
-    const p = pressure(await loadLedger($), now)
+    const p = pressureAt(await loadLedger($), now)
     level = p.level
     if (!storeLoaded) await loadStore($)
     // Only a prompt the person typed starts a new route; one typed into a running turn rides that turn.

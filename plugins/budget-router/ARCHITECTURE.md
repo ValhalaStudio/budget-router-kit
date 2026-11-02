@@ -1,10 +1,11 @@
 # budget-router architecture
 
-Four source files, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
+Five source files, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
 
 | File | Role | Engine calls |
 |---|---|---|
-| `hooks/register.ts` | The hooks, session state, the daily budget ledger and the route decision | `$.store`, `$.ui.status`, `$.ui.toast`, `$.session.usage`, `$.session.cwd`, `$.session.append` |
+| `hooks/register.ts` | The hooks, session state and the route decision | `$.store`, `$.ui.status`, `$.ui.toast`, `$.session.usage`, `$.session.cwd`, `$.session.append` |
+| `hooks/ledger.ts` | The daily budget ledger: folds rate-limit readings into today's spend and reads back the pressure level; reads older stored ledgers | none |
 | `hooks/policy.ts` | Pure routing helpers: Unreal rule, cache-aware switching, pace controller, cost ladder, escalation, context notices | none |
 | `hooks/smart.ts` | The learner: a cost-aware bandit over (model, effort) | none |
 | `hooks/tips.ts` | Fixed-text tips and the rules for when to show one (the caller shows them as a toast) | none |
@@ -24,10 +25,12 @@ flowchart LR
   end
   subgraph MOD["budget-router mod"]
     direction TB
-    REG["register.ts<br/>hooks + state + ledger + decide()"]
+    REG["register.ts<br/>hooks + state + decide()"]
+    LED["ledger.ts<br/>daily budget"]
     POL["policy.ts<br/>pure helpers"]
     SM["smart.ts<br/>learner"]
     TP["tips.ts<br/>fixed-text tips"]
+    REG --> LED
     REG --> POL
     REG --> SM
     REG --> TP
@@ -51,8 +54,6 @@ classDiagram
   class Register["register.ts"] {
     +register(on, options)
     -readOptions(options) Opts
-    -absorb(ledger, rateLimits, now) Ledger
-    -pressure(ledger, now) Pressure
     -classify(prompt, prevTier) Tier
     -decide(tier, why, pressure, x, kind) Route
     -escalate(step, base) Spec
@@ -96,7 +97,7 @@ classDiagram
   }
   class Ledger {
     day, windowReset
-    windowStartPct, lastPct, carry
+    base, lastPct
     budgetPts, fiveHourPct
     alerted, wrapped
   }
