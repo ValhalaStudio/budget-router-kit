@@ -1,6 +1,6 @@
 # Notes for the directory review (0.11.0)
 
-budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 4 source files (`register.ts` wiring and state, `policy.ts` pure routing helpers, `smart.ts` the learner, `tips.ts` fixed-text tips), about 1,200 lines. `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
+budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 5 source files (`register.ts` wiring and state, `ledger.ts` the daily budget, `policy.ts` pure routing helpers, `smart.ts` the learner, `tips.ts` fixed-text tips). `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
 
 ## What 0.11.0 removed
 

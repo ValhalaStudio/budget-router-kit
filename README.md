@@ -17,7 +17,7 @@ sonnet·high (standard) │ day 42% │ 5h 12% │ week 61% │ saved $3.10     
 | **It learns what is enough for you** | A small local learner watches which cheaper setting worked for your kind of prompt and tries it only on evidence. It is early and cautious by design: it never leaves the rule-based choice without a record behind it. |
 | **It teaches cheaper habits** | A short tip appears when the situation calls for it: a long paste, a build log, a very long turn, repeated failures, a capped day. The [cheatsheet](plugins/budget-router/CHEATSHEET.md) has every habit, each checked against Claude Code's documentation. |
 | **A report with conclusions** | One command turns your own transcripts into a page that shows where your usage went and what to change. See [Measure your own savings](#measure-your-own-savings). |
-| **Private by construction** | Sends nothing, runs no programs, reads no files, stores no prompt text, adds nothing to your prompts. Six hooks, about 1,200 lines you can read in an afternoon, and checks in the repository that fail if any of that changes. |
+| **Private by construction** | Sends nothing, runs no programs, reads no files, stores no prompt text, adds nothing to your prompts. Six hooks and five short source files you can read in an afternoon, and checks in the repository that fail if any of that changes. |
 
 ## Why it matters
 
@@ -34,15 +34,7 @@ flowchart LR
   E --> F["Status bar, notices,<br/>and the odd tip"]
 ```
 
-| Prompt looks like | Runs on |
-|---|---|
-| chit-chat, quick fact, one obvious command | Haiku · low |
-| small, fully specified edit or lookup | Sonnet · low |
-| normal coding, debugging, config work | Sonnet · high |
-| design, hard bugs, refactors, security, research | Opus · high |
-| "think hard" / "ultrathink" | Opus · xhigh |
-
-The router is **rules first**: keywords and the shape of a prompt choose the tier. The learner and the budget only adjust that choice. You can pin a route with the `pin` option whenever you prefer to decide yourself. The full picture, with class, sequence and decision diagrams, is in [ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md).
+The router is **rules first**: keywords and the shape of a prompt choose the tier (chit-chat runs on Haiku, normal coding on Sonnet, design and hard bugs on Opus, "think hard" on Opus at higher effort; the [full table](plugins/budget-router/README.md#routing) is in the reference). The learner and the budget only adjust that choice. You can pin a route with the `pin` option whenever you prefer to decide yourself. The full picture, with class, sequence and decision diagrams, is in [ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md).
 
 ## Install
 
@@ -87,11 +79,7 @@ Everything runs on your machine; no prompt text is kept and nothing is uploaded.
 
 **Does it work in claude.ai chat or the desktop app?** Only Claude Code (the terminal and the desktop app's Code tab). It cannot see or change a chat in the browser.
 
-**Can I turn parts off?** Yes, in `/config`: tips, the idle-cache notice, the large-context notice, pace control, escalation, the learner, and the Unreal rule are each an option.
-
-## Settings
-
-Everything is a plugin option in `/config`: the five tiers, the two caps and their thresholds, the wrap-up point, `pin` (a tier such as `light` or `deep`, or a model with an optional effort such as `haiku` or `sonnet:low`; `auto` routes every prompt), the learner mode (`live`, `shadow` or `off`), and switches for pace control, escalation, the idle and large-context notices, and tips. Caps still apply on top of a pin.
+**Can I turn parts off, or choose myself?** Yes, in `/config`: tips, the idle-cache notice, the large-context notice, pace control, escalation, the learner and the Unreal rule are each an option, and `pin` fixes the route (a tier such as `deep`, or a model with an optional effort such as `sonnet:low`). Caps still apply on top of a pin.
 
 ## How it differs from other tools
 
@@ -106,10 +94,6 @@ Written from the projects' public READMEs on 2026-10-18; corrections welcome as 
 | Proxies | ccrouter | Sit in front of the API and route requests | Runs as a plugin inside Claude Code, no proxy or API key; stores no prompt text |
 
 What no other tool I found does: treat the weekly limit as a daily budget, and let that budget decide how cautious the model choice is. Limits to know about: it only guards Claude Code, and the daily budget needs a subscription's rate-limit readings.
-
-## Helper agents
-
-Five small subagents ship with it, on cheap models, with short descriptions (about 60 tokens each). Claude Code offers them to the model by their own descriptions: `scout` (wide searches) and `log-triage` (cut a build or cook log to its errors) have no shell; `disk-auditor`, `repo-check` and `reviewer` use the shell to measure or run git and are instructed never to change anything.
 
 ## For reviewers and contributors
 
@@ -126,7 +110,7 @@ Five small subagents ship with it, on cheap models, with short descriptions (abo
 
 | Component | Version |
 |---|---|
-| Claude Code | 2.1.302 (minimum supported 2.1.287) |
+| Claude Code | 2.1.316 (minimum supported 2.1.287) |
 | budget-router | 0.11.0 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |

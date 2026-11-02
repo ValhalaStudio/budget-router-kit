@@ -8,17 +8,6 @@ Claude subscriptions have only a 5-hour and a weekly limit. budget-router splits
 sonnet·high (standard) │ day 42% │ 5h 12% │ week 61% │ saved $3.10      ← the status bar under your prompt
 ```
 
-## At a glance
-
-| You want | What provides it |
-|---|---|
-| To know where you stand | The status bar, and notices at 50%, 80% and a wrap-up heads-up at 90% of the day's share |
-| Never to be blocked by the plugin | It never refuses or holds a prompt, a tool call or a subagent |
-| The right model for each prompt | Keyword rules, a cautious learner, pace control and the budget caps |
-| Cheaper habits | Tips as notices, and the [cheatsheet](CHEATSHEET.md) |
-| Proof of what helps you | A local report with conclusions (`study/report.py` in the repository) |
-| Confidence it is safe | Six hooks, no network, no files, no programs, nothing added to prompts; see [what each hook does](#what-each-hook-does) |
-
 ## What it does
 
 ### Routing
@@ -80,11 +69,7 @@ Needs Claude Code 2.1.287 or newer and a Claude subscription (Pro or Max). On an
 
 ## What this mod can decide for you
 
-This plugin is a mod (a hooks module), so here is plainly what it can do with that. Everything is in `hooks/register.ts`.
-
-**It decides the model and effort of each request** (`turn.step`). That is its purpose. The `pin` option overrides the choice; the usage caps apply on top.
-
-**It takes no other decision.** It never refuses, holds, drops or rewrites a prompt, a tool call or a subagent, and never approves or denies a permission request. It registers no tools, commands or agents of its own, stands in for no tool, and adds nothing to the prompt or the system prompt. It does not touch the permission mode, Remote Control, settings, agent registration, command execution or file writes.
+This plugin is a mod (a hooks module, wired in `hooks/register.ts`). It decides one thing: the model and effort of each request (`turn.step`). The `pin` option overrides the choice, and the usage caps apply on top. It takes no other decision: it never refuses, holds, drops or rewrites a prompt, a tool call or a subagent, never approves or denies a permission request, registers no tools, commands or agents, stands in for no tool, and adds nothing to the prompt or the system prompt. It does not touch the permission mode, Remote Control, settings, agent registration, command execution or file writes.
 
 ## What each hook does
 
@@ -121,18 +106,7 @@ No account, sign-in or test data is needed: install the plugin and use Claude Co
 
 ## Privacy and support
 
-The full privacy policy, with what is handled, where it goes, how long it is kept and how to delete it, is in [PRIVACY.md](PRIVACY.md). Support is through GitHub issues, and the source here is what runs.
-
-## How it follows the Anthropic Software Directory Policy
-
-| Policy area | What budget-router does |
-|---|---|
-| Safety and security | It changes only which model and effort a request uses, and what you are told. It does not weaken Claude's safeguards or sandbox, takes no permission decision, and never refuses a prompt, tool call or subagent. |
-| Privacy and data | Collects only what each feature needs (see PRIVACY.md). No conversation history, memory or file reads; prompt text is never stored. No third party receives data. |
-| Hidden or fetched instructions | None. It adds nothing to prompts or the system prompt; the only text it appends is the cap notice described above, and nothing is fetched from anywhere. |
-| Other plugins | It never calls another plugin's tools and never points the model at them. It does not change how subagents start and hides no agents. |
-| Documentation and support | This README, PRIVACY.md and the issue tracker. Three working examples are above. |
-| Unsupported use cases | It does not move money, generate images, video or audio, or serve advertisements. The dollar figures it shows are estimates of usage cost, not transactions. |
+The full privacy policy is in [PRIVACY.md](PRIVACY.md). Support is through [GitHub issues](https://github.com/ValhalaStudio/budget-router-kit/issues); the source here is what runs. How the plugin meets the Anthropic Software Directory Policy is set out in [review.md](https://github.com/ValhalaStudio/budget-router-kit/blob/main/review.md).
 
 ## License
 
