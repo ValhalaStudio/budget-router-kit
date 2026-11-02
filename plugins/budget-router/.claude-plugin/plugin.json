@@ -1,11 +1,11 @@
 {
   "name": "budget-router",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "author": {
     "name": "ValhalaStudio",
     "url": "https://github.com/ValhalaStudio"
   },
-  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning, and learns which cheaper setting is enough for your work. Sends nothing, runs no programs, never blocks a prompt, a tool call or a subagent, and writes no files.",
+  "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning, and learns which cheaper setting is enough for your work. Sends nothing, runs no programs, reads no files or commands, never blocks a prompt, a tool call or a subagent, and writes no files.",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
   "repository": "https://github.com/ValhalaStudio/budget-router-kit",
@@ -208,24 +208,6 @@
       "title": "Large-context notice",
       "description": "Notice each time the context grows past a multiple of this many tokens (0 turns it off)",
       "default": 150000
-    },
-    "runbooks": {
-      "type": "boolean",
-      "title": "Runbook memory",
-      "description": "Notice shell commands you repeat and let you save them as scripts with /runbook; matching prompts get a one-line pointer to your own script",
-      "default": true
-    },
-    "runbookAfter": {
-      "type": "number",
-      "title": "Offer a runbook after (runs)",
-      "description": "How many times the same command must run before it is offered",
-      "default": 4
-    },
-    "runbookDir": {
-      "type": "string",
-      "title": "Runbook folder",
-      "description": "Folder shown as the suggested place to save a runbook script. The plugin never writes there itself (blank: ~/.claude/runbooks)",
-      "default": ""
     },
     "learn": {
       "type": "boolean",

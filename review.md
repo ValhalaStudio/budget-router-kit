@@ -1,12 +1,12 @@
 # Directory review: what was addressed in 0.10.5
 
-Reply to the plugin directory's validation and policy review of `budget-router`. Every note from the review is listed in order with what was done. Code references are to `plugins/budget-router/`. The build was checked with `claude plugin validate` (passes) and `claude plugin test` (104 tests, all pass), and the commands were run once end to end in a headless session.
+Reply to the plugin directory's validation and policy review of `budget-router`. Every note from the review is listed in order with what was done. Code references are to `plugins/budget-router/`. The build was checked with `claude plugin validate` (passes) and `claude plugin test` (94 tests, all pass), and the commands were run once end to end in a headless session.
 
 ## Validation (passed with 4 notes)
 
 | # | Note | Status | What was done |
 |---|---|---|---|
-| 1 | "Nothing to change: the directory records that the mod adds tools, commands or agents." | Informational | Nothing to change. The plugin adds three tools (`budget`, `route`, `runbook`), three markdown commands and five agents; all are named in the README. |
+| 1 | "Nothing to change: the directory records that the mod adds tools, commands or agents." | Informational | Nothing to change. The plugin adds two tools (`budget`, `route`), two markdown commands and five agents; all are named in the README. |
 | 2 | "Say in the plugin's README what the hook changes." | Addressed | README, section "What each hook does", lists every hook and what it changes. The only things the plugin changes are the model and effort of each turn (`turn.step`) and one added guidance block (`prompt.context`). 0.10.5 updates the table for the new tool-answering hook. |
 | 3 | "Say in the plugin's README what the hook does." | Addressed | Same table; section "What this mod can decide for you, and what it can send out" states that it takes no permission decision and never refuses, holds, drops or rewrites a prompt, tool call or subagent. |
 | 4 | "1 well-formed image or font file was let through … `.claude-plugin/icon.png`." | Informational | Nothing to change. The file is an image; it contains no code. |
@@ -28,18 +28,31 @@ Reply to the plugin directory's validation and policy review of `budget-router`.
 
 - The guidance block the plugin adds to a conversation still said it "refuses prompts at 100%". It never does since 0.10.4; the text now says it never refuses a prompt.
 - The marketplace entry and a config description still mentioned a "lock"; reworded.
-- The README test count was stale (109); it is 104.
+- The README test count was stale (109); it is 94.
+
+## Second review round (0.10.5 resubmitted; still held; answered in 0.10.6)
+
+After 0.10.5 the validation passed with notes and the policy review still held three items. Each is answered in the working tree below:
+
+| # | Note | Status | What was done |
+|---|---|---|---|
+| 13 | "If the part that reads the credential and the part that sends data are related, pass a `${user_config.KEY}` value … or remove every part that reads a credential, which clears this hold." | Addressed by removal | The only parts that read anything of yours were **runbook memory** (it read every Bash/PowerShell command you ran, kept the text of up to 150, and carried patterns that spot keys and logins) and **`/budget vet <path>`** (it opened any file or folder you named). **Both are removed**, with `/runbook` and the `runbooks`, `runbookAfter` and `runbookDir` options. The plugin now has no file or command reading at all: the code contains no `$.fs` call (a compliance check bans it), and the only inputs it reads are the rate-limit and context figures Claude Code reports and the working-folder name, hashed. Data left in the store by older versions (`cmdstats`, `runbooks`) is deleted when the plugin starts. |
+| 14 | "If the mod is meant to stand in for a tool, say in the plugin's README which tools and when; otherwise return what next gives back." | Addressed | The plugin stands in for exactly two tools, `mcp__budget-router__budget` and `mcp__budget-router__route`, which exist only because it registers them. The README (section "What this mod can decide for you…", paragraph "Tools it stands in for") says so and says when: only after you typed the matching command. The matcher is now a literal pattern in the `on('tool.call', …)` call, so no other tool can reach that hook; every other tool call goes through the other `tool.call` hook, which returns exactly what `next` gives back. |
+| 15 | "Where the plugin runs this, ship the script inside the plugin and run that file instead. Where it only appears in documentation, nothing needs to change." | Addressed by removal | The only script-running text in the code was the runbook hint (`powershell -NoProfile -ExecutionPolicy Bypass -File …`) that pointed the model at a script you had saved. It is removed with the runbook feature. The plugin runs no script, and no command text mentioning a shell remains. |
+| 16 | "Nothing to change: the directory records that the name stands in the mod's text." | Informational | Nothing to change. |
+
+Everything checked again: `claude plugin validate` passes, `claude plugin test` passes (94 tests; the removed features' tests are gone), and `node --test checks/` passes (15 checks, which now also ban any `$.fs` use).
 
 ## Self-audit before resubmission
 
 - **Secrets:** the secret scanner found nothing in the 40 files. The one `sk-ant` string in the history is a dummy value in a test of the "looks like a key" refusal.
 - **Personal data:** a real Windows user name appeared in two test fixtures; replaced with a placeholder. `study/turns.jsonl` (derived from the author's own transcripts) is git-ignored and not in the repository.
-- **Prompt injection through the new command tools:** because the three tools are visible to the model, text in a file or web page could have told it to call `budget wipe` or `budget vet <path>`. The tools now answer only when the person typed the matching command (`prompt.submit` arms it with the typed arguments, once); a call the model makes on its own is refused with a message, and the model's own `args` are ignored. A test covers it, and it was confirmed live: a typed `/budget-router:route why` runs, and a model-initiated `budget reset` does nothing.
+- **Prompt injection through the new command tools:** because the two tools are visible to the model, text in a file or web page could have told it to call `budget wipe`. The tools now answer only when the person typed the matching command (`prompt.submit` arms it with the typed arguments, once); a call the model makes on its own is refused with a message, and the model's own `args` are ignored. A test covers it, and it was confirmed live: a typed `/budget-router:route why` runs, and a model-initiated `budget reset` does nothing.
 - **Agents:** the five helper agents set no `permissionMode`; they are read-only by their instructions, but `disk-auditor`, `log-triage`, `repo-check` and `scout` hold Bash/PowerShell, so that restriction is the prompt's, not the tool list's. Disclosed in the README.
 - **Not checked:** the directory's own safety scan and policy engine, which only run on submission.
 
 ## What changes for people using it
 
-- The commands are typed with the plugin prefix: `/budget-router:budget`, `/budget-router:route`, `/budget-router:runbook`. Each costs one very short Haiku turn, because a markdown command is a prompt. The exact text is shown as transcript lines, and the model replies "Done."
+- The commands are typed with the plugin prefix: `/budget-router:budget`, `/budget-router:route`. Each costs one very short Haiku turn, because a markdown command is a prompt. The exact text is shown as transcript lines, and the model replies "Done."
 - The optional Haiku classifier is gone; prompts are labelled by keyword rules only (the default before).
 - The time zone offset no longer falls back to `date`/`powershell`; if the engine reports UTC, days follow UTC.

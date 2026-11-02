@@ -9,17 +9,15 @@ import {
   pushLog,
   shouldStick,
   summarize,
-  verdict,
-  vetText,
 } from './policy'
-import type { Finding, LogEntry, PaceSample } from './policy'
+import type { LogEntry, PaceSample } from './policy'
 import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
 import type { CatalogIndex, CatalogItem, PacerState } from './policy'
 import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, kindOf, stepBucket, exportContribution, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
 import type { Momentum, Price, SmartStore, Usage } from './smart'
 import { PRIOR, PRIOR_INFO } from './prior'
-import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, looksSensitive, noteCommand, recordOutcome, rungName, runbookBody, runbookFile, runbookHintText, runbookItem, runbookName, runbookRunCommand, sizeBucket, sizeNudgeText, stepReadUsd, stepWriteUsd, usd } from './policy'
-import type { CmdStats, Learned, Runbook } from './policy'
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, recordOutcome, rungName, sizeBucket, sizeNudgeText, stepReadUsd, stepWriteUsd, usd } from './policy'
+import type { Learned } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
 // what the prompt asks for, and tightens that choice as today's share of the
@@ -88,9 +86,6 @@ type Opts = {
   idleGuard: string
   idleMinTokens: number
   nudgeTokens: number
-  runbooks: boolean
-  runbookAfter: number
-  runbookDir: string
   learn: boolean
   learnMinSamples: number
   learnExplore: number
@@ -213,9 +208,6 @@ function readOptions(options: PluginOptions): Opts {
     idleGuard: ['off', 'warn'].includes(str(options.idleGuard, 'warn')) ? str(options.idleGuard, 'warn') : 'warn',
     idleMinTokens: num(options.idleMinTokens, 60_000),
     nudgeTokens: num(options.nudgeTokens, 150_000),
-    runbooks: bool(options.runbooks, true),
-    runbookAfter: num(options.runbookAfter, 4),
-    runbookDir: str(options.runbookDir, ''),
     learn: bool(options.learn, true),
     learnMinSamples: num(options.learnMinSamples, 8),
     learnExplore: num(options.learnExplore, 0.1),
@@ -410,18 +402,14 @@ async function refreshCatalog($: EngineInterface) {
 }
 
 function catalogSuggest(text: string) {
-  const items = [...(o.catalogHints ? catalog.values() : []), ...(o.runbooks ? runbooks.map(runbookItem) : [])]
+  const items = [...(o.catalogHints ? catalog.values() : [])]
   if (items.length === 0) return undefined
   catalogIndex ??= buildIndex(items)
   return suggestFrom(text, catalogIndex)
 }
 
-// ---- v0.6: ghost-token guard, runbook memory, learner ----
-const CMDS_KEY = 'cmdstats'
-const BOOK_KEY = 'runbooks'
+// ---- v0.6: ghost-token guard, learner ----
 const BANDIT_KEY = 'bandit'
-let cmdStats: CmdStats = {}
-let runbooks: Runbook[] = []
 let learnedData: Learned = {}
 let turnErrors = 0 // failed tool calls since the last prompt, counted as they happen
 let v06Loaded = false
@@ -431,7 +419,7 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.5'
+const PLUGIN_VERSION = '0.10.6'
 const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
@@ -466,16 +454,11 @@ async function detectProject($: EngineInterface) {
 }
 const smartOn = () => o.learn && (o.learnMode === 'live' || o.learnMode === 'shadow')
 
-const SHELLS = new Set(['Bash', 'PowerShell'])
 const plain = (v: string) => v.replace(/[^A-Za-z0-9 .:_/-]/g, '').slice(0, 60)
-const waiting = () =>
-  Object.entries(cmdStats)
-    .filter(([, c]) => !c.saved && c.n >= 2)
-    .sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last)
-
 async function loadV06($: EngineInterface) {
-  cmdStats = ((await $.store.get(CMDS_KEY)) as CmdStats | undefined) ?? {}
-  runbooks = ((await $.store.get(BOOK_KEY)) as Runbook[] | undefined) ?? []
+  // Versions up to 0.10.4 kept the text of repeated shell commands; this one keeps none, and clears what was kept.
+  await $.store.delete('cmdstats')
+  await $.store.delete('runbooks')
   learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
   smartData = ((await $.store.get(SMART_KEY)) as SmartStore | undefined) ?? emptyStore()
   catalogIndex = undefined
@@ -483,27 +466,10 @@ async function loadV06($: EngineInterface) {
 }
 
 // Watches tool calls without changing them: counts failed calls since the last prompt (for
-// escalation and the learner) and shell commands that repeat (runbook memory). It reads nothing
-// from the conversation history; it sees each call as it happens, like any hook does.
-async function observeTool($: EngineInterface, e: { tool: string; agentId?: string; command?: unknown }, failed: boolean) {
+// escalation and the learner). It never looks at what a call was asked to do.
+async function observeTool(e: { agentId?: string }, failed: boolean) {
   if (e.agentId !== undefined) return
-  if (failed) {
-    turnErrors++
-    return
-  }
-  if (!o.runbooks || !SHELLS.has(e.tool) || typeof e.command !== 'string') return
-  if (!v06Loaded) await loadV06($)
-  const hit = noteCommand(cmdStats, e.tool, e.command, Date.now(), o.runbookAfter)
-  if (!hit) return
-  cmdStats = hit.stats
-  const stat = cmdStats[hit.key]
-  if (hit.crossed && stat) {
-    cmdStats = { ...cmdStats, [hit.key]: { ...stat, offered: true } }
-    const snippet = e.command.trim().replace(/\s+/g, ' ').slice(0, 70)
-    $.ui.toast(`You have run this ${stat.n} times: "${snippet}". /runbook save keeps it as a script I can point you to.`, { timeoutMs: 20_000 })
-    await addLog($, { t: Date.now(), k: 'runbook', name: runbookName(e.command), act: 'offered' })
-  }
-  await $.store.set(CMDS_KEY, cmdStats)
+  if (failed) turnErrors++
 }
 
 // After each main turn: record how it went for the learner.
@@ -544,62 +510,6 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
 
 
 
-async function runbookCommand($: EngineInterface, raw: string): Promise<string> {
-  if (!v06Loaded) await loadV06($)
-  const [verb = 'list', ...rest] = raw.trim().split(/\s+/)
-  const cands = waiting()
-  if (verb === '' || verb === 'list') {
-    const lines = ['Runbooks (commands you keep repeating, saved as scripts):']
-    if (runbooks.length === 0) lines.push('  none saved yet')
-    for (const rb of runbooks) lines.push(`  ${rb.name}: ${rb.runs}`)
-    lines.push('Repeated commands not saved yet (most runs first):')
-    if (cands.length === 0) lines.push('  none')
-    cands.slice(0, 8).forEach(([, c], n) => lines.push(`  #${n + 1} ${c.n}x ${c.tool}: ${c.sample.replace(/\s+/g, ' ').slice(0, 90)}`))
-    lines.push('/runbook save [#n] [name] [words describing it] | forget <name> | ignore')
-    return lines.join('\n')
-  }
-  if (verb === 'ignore') {
-    for (const [k, c] of cands) cmdStats[k] = { ...c, offered: true }
-    await $.store.set(CMDS_KEY, cmdStats)
-    return 'Will not offer the commands currently listed again.'
-  }
-  if (verb === 'forget') {
-    const name = rest[0]
-    const before = runbooks.length
-    runbooks = runbooks.filter(r => r.name !== name)
-    if (runbooks.length === before) return `No runbook named "${name ?? ''}".`
-    await $.store.set(BOOK_KEY, runbooks)
-    catalogIndex = undefined
-    return `Forgot ${name}. The script file was left where it is.`
-  }
-  if (verb === 'save') {
-    let args = rest
-    let pick = cands[0]
-    if (args[0] && /^#?\d+$/.test(args[0])) {
-      pick = cands[Number(args[0].replace('#', '')) - 1]
-      args = args.slice(1)
-    }
-    if (!pick) return 'Nothing to save yet: no command has been repeated.'
-    const [key, stat] = pick
-    if (looksSensitive(stat.sample)) return 'That command looks like it contains a key, a login or other private value, so it was not saved. Put the value in an environment variable and try again.'
-    let name = (args[0] ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '') || runbookName(stat.sample)
-    const base = name
-    for (let n = 2; runbooks.some(r => r.name === name); n++) name = `${base}-${n}`
-    const dir = o.runbookDir !== '' ? o.runbookDir.replace(/\\/g, '/') : '~/.claude/runbooks'
-    const file = `${dir}/${runbookFile(name, stat.tool)}`
-    const rb: Runbook = { name, file, tool: stat.tool, description: `${args.slice(1).join(' ')} ${stat.sample}`.slice(0, 600), runs: '' }
-    rb.runs = runbookRunCommand(rb)
-    runbooks = [...runbooks, rb]
-    cmdStats[key] = { ...stat, saved: name }
-    catalogIndex = undefined
-    await $.store.set(BOOK_KEY, runbooks)
-    await $.store.set(CMDS_KEY, cmdStats)
-    await addLog($, { t: Date.now(), k: 'runbook', name, act: 'saved' })
-    return `Remembered \"${name}\". budget-router writes no files: save the script below yourself as ${file}, then later prompts can be pointed to it. Read it before you run it.\nRun it with: ${rb.runs}\n--- ${runbookFile(name, stat.tool)} ---\n${runbookBody(stat.sample, stat.tool, new Date())}`
-  }
-  return 'Usage: /runbook [list] | save [#n] [name] [words describing it] | forget <name> | ignore'
-}
-
 // A turn with several failed tool calls gets more effort, and after a long run a stronger model.
 // Effort changes keep the prompt cache on the 5.5 models; a model step happens at most once a turn.
 async function troubleAdjust($: EngineInterface, e: { turnId: string; index: number }, base: Spec): Promise<Spec> {
@@ -625,50 +535,6 @@ async function troubleAdjust($: EngineInterface, e: { turnId: string; index: num
   if (!escalation) return base
   const raised = applyEscalation(base, escalation)
   return level >= 2 ? capSpec(raised, o.criticalCap) : level === 1 ? capSpec(raised, o.warnCap) : raised
-}
-
-const VET_EXT = /\.(md|json|ts|tsx|js|mjs|cjs|ps1|sh|py|yaml|yml|toml)$/i
-
-// /budget vet <path>: static red-flag scan of a skill, agent, command or plugin folder before installing it.
-async function vetPath($: EngineInterface, target: string): Promise<string> {
-  if (target === '') return 'Usage: /budget vet <file or folder of a skill, agent or plugin>'
-  const files: string[] = []
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > 3) return
-    for (const ent of await $.fs.list(dir)) {
-      if (files.length >= 60) return
-      const full = `${dir.replace(/[\\/]+$/, '')}/${ent.name}`
-      if (ent.kind === 'dir') {
-        if (!/^(node_modules|\.git)$/.test(ent.name)) await walk(full, depth + 1)
-      } else if (ent.kind === 'file' && VET_EXT.test(ent.name)) {
-        files.push(full)
-      }
-    }
-  }
-  try {
-    const st = await $.fs.stat(target)
-    if (st.kind === 'dir') await walk(target, 0)
-    else files.push(target)
-  } catch (err) {
-    return `Cannot read ${target}: ${err instanceof Error ? err.message : String(err)}`
-  }
-  const lines = [`Budget router: vet ${target} (${files.length} files read; advisory only, read everything yourself before installing)`]
-  const all: Finding[] = []
-  for (const f of files) {
-    try {
-      const found = vetText(String(await $.fs.read(f)))
-      all.push(...found)
-      for (const x of found) lines.push(`  ${x.sev.toUpperCase().padEnd(6)} ${f.slice(target.length).replace(/^[\\/]/, '') || f}: ${x.what}`)
-    } catch {
-      lines.push(`  skipped ${f} (unreadable or over 4 MiB)`)
-    }
-    if (lines.length > 45) {
-      lines.push('  ... more findings not shown')
-      break
-    }
-  }
-  lines.push(`  verdict: ${verdict(all)}`)
-  return lines.join('\n')
 }
 
 function heuristic(text: string, prev: Tier | undefined): { tier: Tier; why: string } {
@@ -815,13 +681,12 @@ function report(l: Ledger | undefined, p: Pressure, now: number): string {
   lines.push(
     `  route: ${route ? `${route.family}·${route.effort} for a ${route.tier} turn (${route.why})` : 'not chosen yet'}${pin ? ' [pinned: /route auto to release]' : ''}`,
     `  caps: ${o.warnPercent}% → ${o.warnCap.family}·${o.warnCap.effort}, ${o.criticalPercent}% → ${o.criticalCap.family}·${o.criticalCap.effort}, 100% → stays at the second cap`,
-    `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills and /budget vet <path> check the skill list`,
+    `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills checks the skill list`,
   )
   if (ctxTokens > 0) lines.push(`  context: ${kTokens(ctxTokens)} tokens, about ${usd(stepReadUsd(ctxTokens, route?.family ?? 'sonnet'))} to re-read per step from cache, about ${usd(stepWriteUsd(ctxTokens, route?.family ?? 'sonnet'))} if the cache has expired; /compact or a fresh session shrinks it`)
   if (paceNote !== '') lines.push(`  ${paceNote}`)
   lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
   lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle)`}; context nudge ${o.nudgeTokens > 0 ? `every ${kTokens(o.nudgeTokens)}` : 'off'}`)
-  lines.push(`  runbooks: ${!o.runbooks ? 'off' : `${runbooks.length} saved, ${waiting().length} repeated command(s) waiting (/runbook)`}`)
   if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
   else if (smartOn()) {
     const rows = smartSummary(smartData, Date.now())
@@ -843,19 +708,13 @@ export const register: Register = (on, options) => {
     const argsSchema = { type: 'object', properties: { args: { type: 'string', description: 'Everything the person typed after the command name, as typed; empty when nothing.' } } }
     await $.tool.register({
       name: 'budget',
-      description: "Backs the /budget command: today's usage budget and route, /budget learn [reset|export], skills, vet <path>, reset, wipe. Returns the text to show the person.",
+      description: "Backs the /budget command: today's usage budget and route, /budget learn [reset|export], skills, reset, wipe. Returns the text to show the person.",
       inputSchema: argsSchema,
       isDeferred: false,
     })
     await $.tool.register({
       name: 'route',
       description: 'Backs the /route command: pin the model/effort tier for this session, or auto; /route why lists recent decisions. Returns the text to show the person.',
-      inputSchema: argsSchema,
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'runbook',
-      description: 'Backs the /runbook command: list, save a repeated command as a script to print, forget, ignore. Returns the text to show the person.',
       inputSchema: argsSchema,
       isDeferred: false,
     })
@@ -919,10 +778,10 @@ export const register: Register = (on, options) => {
     const p = pressure(l, now)
     level = p.level
     if (!v06Loaded) await loadV06($)
-    const isOwnCommand = /^\s*\/(budget-router:)?(budget|route|runbook)\b/.test(e.text)
+    const isOwnCommand = /^\s*\/(budget-router:)?(budget|route)\b/.test(e.text)
     // The command tools answer only a command the person typed, with the arguments they typed: a tool call
     // the model makes on its own (say, after reading a hostile file) finds nothing armed and is refused.
-    const typed = e.command?.name.match(/^(?:budget-router:)?(budget|route|runbook)$/)?.[1]
+    const typed = e.command?.name.match(/^(?:budget-router:)?(budget|route)$/)?.[1]
     armed = typed !== undefined && e.turnId === undefined && e.agentId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) ? { name: typed, args: e.command?.args ?? '' } : undefined
     let extra: string[] = []
     // A prompt typed into a running turn rides that turn's model.
@@ -990,20 +849,13 @@ export const register: Register = (on, options) => {
         if (hint) {
           extra = [hint.text]
           await addLog($, { t: now, k: 'hint', agent: hint.agent })
-        } else if (o.catalogHints || o.runbooks) {
+        } else if (o.catalogHints) {
           const found = catalogSuggest(e.text)
           if (found) {
-            const book = found.item.kind === 'runbook' ? runbooks.find(r => r.name === found.item.name) : undefined
-            if (book) {
-              // the person's own saved script: a pointer for the model
-              extra = [runbookHintText(book)]
-              await addLog($, { t: now, k: 'runbook', name: book.name, act: 'hint' })
-            } else {
-              // someone else's skill or agent: tell the person, never steer the model toward it
-              const owner = found.item.plugin ? ` from ${plain(found.item.plugin)}` : ''
-              $.ui.toast(`An installed ${found.item.kind}${owner} may fit this request: ${plain(found.item.name)}. Use it if you want it.`, { timeoutMs: 15_000 })
-              await addLog($, { t: now, k: 'hint', agent: found.item.name })
-            }
+            // someone else's skill or agent: tell the person, never steer the model toward it
+            const owner = found.item.plugin ? ` from ${plain(found.item.plugin)}` : ''
+            $.ui.toast(`An installed ${found.item.kind}${owner} may fit this request: ${plain(found.item.name)}. Use it if you want it.`, { timeoutMs: 15_000 })
+            await addLog($, { t: now, k: 'hint', agent: found.item.name })
           }
         }
       }
@@ -1047,7 +899,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     try {
-      await observeTool($, e as { tool: string; agentId?: string; command?: unknown }, r.isError === true && r.deny === undefined)
+      await observeTool(e as { agentId?: string }, r.isError === true && r.deny === undefined)
     } catch {
       // observing must never get in the way
     }
@@ -1086,16 +938,16 @@ export const register: Register = (on, options) => {
 
   // The slash commands are markdown files (commands/*.md) that call these three tools, so no command.run
   // hook is needed: the tools answer, the engine's commands are left alone.
-  const COMMAND_TOOLS = /^mcp__budget.router__(budget|route|runbook)$/
-  on('tool.call', { tool: COMMAND_TOOLS }, async ($, e) => {
-    const which = /(budget|route|runbook)$/.exec(e.tool)?.[1]
+  // Stands in for these two tools only, which exist only because this plugin registers them; no other tool call is matched here.
+  on('tool.call', { tool: /^mcp__budget.router__(budget|route)$/ }, async ($, e) => {
+    const which = /(budget|route)$/.exec(e.tool)?.[1]
     const mine = e.agentId === undefined ? armed : undefined
     if (e.agentId === undefined) armed = undefined
     if (mine === undefined || mine.name !== which) {
       return { result: `budget-router: /budget-router:${which} only runs when the person types it; nothing was done.` }
     }
     const args = mine.args
-    const r = which === 'budget' ? await budgetCommand($, args) : which === 'route' ? await routeCommand($, args) : { text: await runbookCommand($, args) }
+    const r = which === 'budget' ? await budgetCommand($, args) : await routeCommand($, args)
     // The person reads the exact text as transcript lines (the terminal draws 2000 characters of a line, so
     // long text goes in pieces); the model only has to say it is done, so nothing is reworded or cut.
     for (const piece of pieces(r.text)) $.ui.log(piece)
@@ -1145,16 +997,12 @@ async function budgetCommand($: EngineInterface, args: string): Promise<{ text: 
     return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints counts you can choose to share (no prompt text is stored).'].join('\n') }
   }
   if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
-  if (arg === 'vet' || arg.startsWith('vet ')) return { text: await vetPath($, raw.slice(3).trim()) }
   if (arg === 'wipe') {
     // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
-    // log, pace controller, runbook counts and list, and the learner's counts. Script files you saved
-    // are left where they are.
-    for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, CMDS_KEY, BOOK_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
+    // log, pace controller and the learner's counts.
+    for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
     learned = {}
     pacerU = 0
-    cmdStats = {}
-    runbooks = []
     learnedData = {}
     smartData = emptyStore()
     smartPending = undefined
@@ -1164,7 +1012,7 @@ async function budgetCommand($: EngineInterface, args: string): Promise<{ text: 
     catalogIndex = undefined
     level = 0
     showStatus($, pressure(undefined, now))
-    return { text: 'Everything budget-router had stored is deleted. Scripts saved with /runbook were left in place (see /runbook list before you forget them).' }
+    return { text: 'Everything budget-router had stored is deleted.' }
   }
   if (arg === 'reset') {
     await $.store.delete(STORE_KEY)

@@ -16,4 +16,4 @@ You will get a reply as soon as the maintainer can read it, and a fix or a decis
 
 ## Scope
 
-budget-router runs as a Claude Code plugin on your machine. It stores its data locally and sends nothing to a server; see [PRIVACY.md](plugins/budget-router/PRIVACY.md). Reports about the stored ledger, the runbook memory, the `/budget vet` scanner, or any way the plugin could change what Claude is allowed to do are all in scope.
+budget-router runs as a Claude Code plugin on your machine. It stores its data locally and sends nothing to a server; see [PRIVACY.md](plugins/budget-router/PRIVACY.md). Reports about the stored ledger, the command tools, or any way the plugin could change what Claude is allowed to do are all in scope.

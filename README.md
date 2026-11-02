@@ -60,7 +60,7 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.5 |
+| budget-router | 0.10.6 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Test suite | 103 tests via `claude plugin test`, plus `claude plugin validate` |
@@ -127,7 +127,6 @@ budget-router does not change how subagents start (0.10.4 removed the model rule
 - **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.
 - **No lock.** Since 0.10.4 nothing is refused at 100%. For a real limit, Claude Code's own `autoContinueAtUsageLimit` setting makes a session wait for the reset.
 - **`/budget skills`** lists what the command and skill list costs (names plus descriptions, in estimated tokens, by plugin) and the longest descriptions.
-- **`/budget vet <path>`** reads a skill, agent, command or plugin folder before you install it and flags red flags: hidden instructions, download-and-run commands, broad `allowed-tools`, hooks, encoded blobs, hidden unicode. It is advisory only: read everything yourself.
 
 ## Helper agents
 

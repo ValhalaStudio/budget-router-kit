@@ -16,7 +16,7 @@ describe('directory review: calls the plugin must not make', () => {
     ['starts a program (notes 6, 7)', /\$\.process\.|\bprocess\.run\b|child_process|(^|[^.\w])(spawn|exec|execSync|spawnSync)\(/],
     ['makes a request (notes 5, 7)', /\$\.http\.|\bfetch\(|XMLHttpRequest|WebSocket/],
     ['calls a model of its own (notes 5, 9)', /\$\.model\./],
-    ['writes a file (note 8)', /\$\.fs\.(write|edit|remove|mkdir|move|copy|delete)\b|writeFile|appendFile/],
+    ['opens or writes a file (notes 8, 9)', /\$\.fs\.|writeFile|appendFile|readFile/],
     ['changes settings, agents or commands (note 8)', /\$\.config\.set|\$\.agent\.(spawn|register)|\$\.command\.(register|run)\b/],
     ['reads an environment variable or credential (note 9)', /\bprocess\.env\b|\bEnv\b\s*[.(]|\$\.env\b|credential|keychain|\.ssh|\.aws|\.npmrc|api[_-]?key\s*[:=]/i],
     ['sets a permission mode or Remote Control (note 8)', /permissionMode|dangerously|bypassPermissions|remoteControl/i],
@@ -58,7 +58,7 @@ describe('directory review: manifest and shipped files', () => {
     assert.deepEqual(files.filter(f => /\.(sh|bat|cmd|ps1)$/i.test(f) && !f.includes('node_modules')), [])
   })
   test('every command is a markdown file that allows only its own tool', () => {
-    for (const n of ['budget', 'route', 'runbook']) {
+    for (const n of ['budget', 'route']) {
       const md = read('commands', `${n}.md`)
       assert.ok(md.includes(`allowed-tools: mcp__budget-router__${n}
 `))
@@ -69,6 +69,7 @@ describe('directory review: manifest and shipped files', () => {
     const text = read('README.md') + read('PRIVACY.md')
     assert.match(text, /Sends: nothing/)
     assert.match(text, /Runs: no programs/)
+    assert.doesNotMatch(text, /Runbook memory\.|`\/budget vet/)
     assert.ok(existsSync(join(root, 'LICENSE')))
   })
 })

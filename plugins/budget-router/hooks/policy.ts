@@ -68,7 +68,6 @@ export type LogEntry =
   | { t: number; k: 'skill'; name: string }
   | { t: number; k: 'idle'; ctx: number; usd: number }
   | { t: number; k: 'learn'; bucket: string; why: string }
-  | { t: number; k: 'runbook'; name: string; act: 'offered' | 'saved' | 'hint' }
   | { t: number; k: 'turn'; sub: boolean; model: string; inp: number; out: number; cr: number; cc: number; ms: number }
 
 export const MAX_LOG = 200
@@ -121,8 +120,6 @@ export function summarize(log: readonly LogEntry[], since: number, hhmm: (ms: nu
     lines.push('  learned moves (the learner changed the rule-based choice):')
     for (const x of learns.slice(-4)) lines.push(`    ${hhmm(x.t)} ${x.bucket}: ${x.why}`)
   }
-  const books = log.filter((x): x is Extract<LogEntry, { k: 'runbook' }> => x.k === 'runbook')
-  if (books.length > 0) lines.push(`  runbooks: ${books.filter(x => x.act === 'offered').length} offered, ${books.filter(x => x.act === 'saved').length} saved, ${books.filter(x => x.act === 'hint').length} suggested for a prompt`)
   const today = log.filter((x): x is Extract<LogEntry, { k: 'turn' }> => x.k === 'turn' && x.t >= since)
   if (today.length > 0) {
     const sum = (rows: typeof today) =>
@@ -146,7 +143,7 @@ export function summarize(log: readonly LogEntry[], since: number, hhmm: (ms: nu
 }
 
 // ---------------------------------------------------------------------------------------
-// v0.4: Unreal build rules, agent hints, cache-aware switching, skill audit and vetting.
+// v0.4: Unreal build rules, agent hints, cache-aware switching and the skill audit.
 
 /** Text that looks like an Unreal / C++ build, cook or packaging failure. */
 export const UE_BUILD_RE =
@@ -252,39 +249,6 @@ export function auditCommands(rows: readonly CmdRow[]): string {
   return lines.join('\n')
 }
 
-export type Finding = { sev: 'high' | 'medium' | 'low'; what: string }
-
-// Text that pipes into a shell, or evaluates a string, is a red flag wherever it came from.
-const PIPE_TO_SHELL = /\|\s*(sh|bash|zsh|iex|powershell|pwsh)\b|Invoke-Expression|\biex\b/i
-
-/** Static red flags in a skill, agent, command or hook file. Advisory only: it cannot prove a file is safe. */
-export function vetText(text: string): Finding[] {
-  const out: Finding[] = []
-  const add = (sev: Finding['sev'], what: string, re: RegExp) => {
-    if (re.test(text)) out.push({ sev, what })
-  }
-  add('high', 'tells the model to keep something from you', /do not (tell|mention|inform|reveal)[^.\n]{0,50}(user|human|person)|without (telling|informing) the user|hide this from/i)
-  add('high', 'pipes text into a shell or evaluates a string', PIPE_TO_SHELL)
-  add('high', 'loads instructions from a URL (they can change after review)', /(load|follow|read)[^.\n]{0,60}(instructions?|prompt|rules)[^.\n]{0,60}https?:\/\//i)
-  add('high', 'hidden or direction-changing unicode characters', /[\u200B-\u200F\u2060\uFEFF\u202A-\u202E]/)
-  const granted = /^allowed-tools\s*:(.*)$/im.exec(text)?.[1]
-  if (granted !== undefined && granted.split(',').some(tok => /^\s*(\*|(Bash|PowerShell|Shell)(\(\*\))?)\s*$/i.test(tok))) {
-    out.push({ sev: 'high', what: 'grants itself broad tool permissions (allowed-tools)' })
-  }
-  add('medium', 'runs shell commands when it loads (inline ! blocks)', /^[ \t]*!`[^`]+`|`!\w/m)
-  add('medium', 'defines hooks', /^hooks\s*:/m)
-  add('medium', 'contains a long encoded blob or decodes base64', /[A-Za-z0-9+/]{200,}={0,2}|base64\s*(-d|--decode)|FromBase64String|atob\(/i)
-  add('medium', 'edits your memory or settings files', /(CLAUDE\.md|AGENTS\.md|settings(\.local)?\.json)[^\n]{0,60}(append|write|modify|edit|add to)/i)
-  if (text.length > 10_000) out.push({ sev: 'low', what: `long (${text.length} characters): read all of it, payloads hide at the end` })
-  return out
-}
-
-export function verdict(findings: readonly Finding[]): string {
-  if (findings.some(f => f.sev === 'high')) return 'DO NOT INSTALL until a person has read it'
-  if (findings.some(f => f.sev === 'medium')) return 'REVIEW the flagged parts before installing'
-  return 'no red flags found (this is not a guarantee)'
-}
-
 // ---------------------------------------------------------------------------------------
 // v0.5: a PID pacer for the daily budget, escalation when a turn goes badly, and
 // suggestions of installed skills and agents ranked by BM25 keyword matching.
@@ -379,7 +343,7 @@ export function applyEscalation(spec: LadderSpec, esc: Escalation): LadderSpec {
 
 // -- Suggesting installed skills and agents (BM25) --------------------------------------
 
-export type CatalogItem = { kind: 'agent' | 'skill' | 'runbook'; name: string; description: string; source: string; plugin?: string }
+export type CatalogItem = { kind: 'agent' | 'skill'; name: string; description: string; source: string; plugin?: string }
 
 const STOP = new Set(
   ('the and for with that this from your you are was were have has had not but can will use used using when then than into onto over under about also just like want need make made get got ' +
@@ -452,8 +416,7 @@ export function suggestFrom(text: string, idx: CatalogIndex, opts: SuggestOption
 }
 
 // ---------------------------------------------------------------------------------------
-// v0.6: ghost-token guard (idle cache rebuilds, big contexts), runbook memory (commands you
-// keep repeating), and a small learner that finds the cheapest model and effort that works
+// v0.6: ghost-token guard (idle cache rebuilds, big contexts) and a small learner that finds the cheapest model and effort that works
 // for each kind of prompt.
 
 // -- Ghost tokens -----------------------------------------------------------------------
@@ -491,92 +454,6 @@ export const sizeBucket = (ctx: number, threshold: number): number => (threshold
 export function sizeNudgeText(ctx: number, family: Family): string {
   return `Context is ${kTokens(ctx)} tokens: every step re-reads it (about ${usd(stepReadUsd(ctx, family))} each on ${family}). /compact or a fresh session cuts that; long build or log output belongs with a helper agent.`
 }
-
-// -- Runbook memory ---------------------------------------------------------------------
-
-export type CmdStat = { n: number; last: number; tool: string; sample: string; offered?: boolean; saved?: string }
-export type CmdStats = Record<string, CmdStat>
-
-/** The command with paths, hashes and numbers blanked, so two runs of the same job compare equal. */
-export function normalizeCommand(cmd: string): string {
-  return cmd
-    .replace(/"[A-Za-z]:[\\/][^"]*"/g, '"<path>"')
-    .replace(/'[A-Za-z]:[\\/][^']*'/g, "'<path>'")
-    .replace(/[A-Za-z]:[\\/][^\s"']+/g, '<path>')
-    .replace(/\b[0-9a-f]{7,}\b/gi, '<hex>')
-    .replace(/\d+/g, 'N')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 400)
-}
-
-const SCRATCH_RE = /scratchpad|Temp[\\/]claude|\/tmp\/|\$env:TEMP|%TEMP%/i
-
-/** Worth keeping: long enough to be a job, short enough to read, and not tied to a scratch folder. */
-export function isRunbookCandidate(cmd: string): boolean {
-  const c = cmd.trim()
-  return c.length >= 40 && c.length <= 2000 && !SCRATCH_RE.test(c)
-}
-
-/** Best-effort check by shape (key prefixes, headers, logins in URLs, long unbroken strings). */
-export function looksSensitive(text: string): boolean {
-  return (
-    /-----BEGIN [A-Z ]*-----/.test(text) ||
-    /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]{16,}/.test(text) ||
-    /:\/\/[^/\s:@]+:[^/\s@]+@/.test(text) ||
-    /\b(sk|ghp|gho|ghs|xox[abpr]|AKIA|AIza)[-_A-Za-z0-9]{12,}/.test(text) ||
-    /(?<![A-Za-z0-9_+=/-])(?=[A-Za-z0-9_+=]*\d)(?=[A-Za-z0-9_+=]*[A-Za-z])[A-Za-z0-9_+=]{28,}(?![A-Za-z0-9_+=/-])/.test(text)
-  )
-}
-
-const MAX_CMDS = 150
-
-/** Count one more run of a command. `crossed` is true the moment it reaches `after` runs. */
-export function noteCommand(stats: CmdStats, tool: string, cmd: string, now: number, after: number): { stats: CmdStats; key: string; crossed: boolean } | undefined {
-  if (!isRunbookCandidate(cmd)) return undefined
-  const key = `${tool}:${normalizeCommand(cmd)}`
-  const prev = stats[key]
-  const next: CmdStat = { n: (prev?.n ?? 0) + 1, last: now, tool, sample: cmd.trim(), ...(prev?.offered ? { offered: true } : {}), ...(prev?.saved ? { saved: prev.saved } : {}) }
-  let out: CmdStats = { ...stats, [key]: next }
-  const keys = Object.keys(out)
-  if (keys.length > MAX_CMDS) {
-    // drop the least-used, oldest entries that are not saved
-    const drop = keys.filter(k => !out[k]?.saved).sort((a, b) => (out[a]?.n ?? 0) - (out[b]?.n ?? 0) || (out[a]?.last ?? 0) - (out[b]?.last ?? 0)).slice(0, keys.length - MAX_CMDS)
-    out = Object.fromEntries(Object.entries(out).filter(([k]) => !drop.includes(k)))
-  }
-  return { stats: out, key, crossed: !next.offered && !next.saved && next.n >= after }
-}
-
-/** A short file-safe name from the command's own words. */
-export function runbookName(sample: string): string {
-  const words = tokenize(sample.replace(/[A-Za-z]:[\\/][^\s"']+/g, ' ').replace(/[$&|;<>"'`(){}\[\]=]/g, ' '))
-  const picked: string[] = []
-  for (const w of words) if (!picked.includes(w) && picked.length < 3 && /^[a-z]/.test(w)) picked.push(w)
-  return picked.length > 0 ? picked.join('-').slice(0, 40) : 'runbook'
-}
-
-export const runbookFile = (name: string, tool: string): string => `${name}.${/powershell|pwsh/i.test(tool) ? 'ps1' : 'sh'}`
-
-export type Runbook = { name: string; file: string; tool: string; description: string; runs: string }
-
-export function runbookRunCommand(rb: Pick<Runbook, 'file' | 'tool'>): string {
-  return /powershell|pwsh/i.test(rb.tool) ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${rb.file}"` : `bash "${rb.file}"`
-}
-
-export function runbookItem(rb: Runbook): CatalogItem {
-  return { kind: 'runbook', name: rb.name, description: rb.description, source: 'runbook' }
-}
-
-export function runbookHintText(rb: Runbook): string {
-  return `[budget-router hint] You saved a runbook for this: ${rb.name}. Run it instead of rebuilding the command: ${rb.runs}`
-}
-
-export function runbookBody(sample: string, tool: string, now: Date): string {
-  const bash = !/powershell|pwsh/i.test(tool)
-  return `# Saved by budget-router on ${now.toISOString().slice(0, 10)} from a command you ran several times.\n# Read it before you run it.\n${bash ? 'set -e\n' : ''}${sample}\n`
-}
-
-// -- Learning the cheapest model and effort that works ----------------------------------
 
 export type Counts = { s: number; f: number }
 export type Learned = Record<string, Record<string, Counts>>

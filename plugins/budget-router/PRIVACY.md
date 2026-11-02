@@ -9,7 +9,6 @@ Contact: open an issue at https://github.com/ValhalaStudio/budget-router-kit/iss
 | Data | Why | Where it goes |
 |---|---|---|
 | Rate-limit percentages and context size that Claude Code reports | To keep you inside a daily budget and warn about expiring caches | Stays in memory and in the local store |
-| Each shell command (Bash or PowerShell) as it runs | To notice commands you repeat (runbook memory) | Counted in the local store. Up to 150 repeated commands are kept, with the text of the latest run of each. Turn it off with the `runbooks` option. |
 | Whether each tool call failed | To raise effort when a turn goes badly and to learn which model step worked | A counter in memory; the learner keeps only success and failure counts, token costs and hashed weights per kind of work, never prompt text. A short follow-up phrase (such as "try again" or "thanks") is compared in memory with your last prompt and then dropped |
 | The name of the folder Claude Code is working in, read once per session from the session's working directory (no program is run) | To keep the learner's record separate per project | Only a short hash of it is kept; the folder name itself is not stored or shared |
 
@@ -17,15 +16,14 @@ It does not read your conversation history, memory, summaries or uploaded files.
 
 ## What it stores on your computer
 
-In the plugin's own store: the usage ledger, model ids seen, burn-rate samples, a decision log (up to 200 rows of tier, reason, model and token counts, with no prompt text), pace-controller state, counts and token costs for the learner (per kind of work and per project; the project is a short hash of the folder path, never the path), a table of hashed word weights that lets it generalise (256 numbers; the words themselves are not kept and cannot be recovered from them), and the repeated-command counts and runbook list described above.
+In the plugin's own store: the usage ledger, model ids seen, burn-rate samples, a decision log (up to 200 rows of tier, reason, model and token counts, with no prompt text), pace-controller state, counts and token costs for the learner (per kind of work and per project; the project is a short hash of the folder path, never the path), and a table of hashed word weights that lets it generalise (256 numbers; the words themselves are not kept and cannot be recovered from them).
 
-It writes no files outside the store. `/runbook save` prints a script for you to save yourself. Commands that look like they hold a key, a login or another private value are refused.
+It writes no files outside the store, reads no file and no command you run, and runs no program. Versions up to 0.10.4 kept the text of repeated shell commands (runbook memory); 0.10.5 removes that feature and deletes what it had stored.
 
 ## How long it is kept
 
 - The usage ledger and pace samples roll over each day.
 - The decision log keeps the latest 200 rows.
-- Repeated-command counts keep the latest 150 commands.
 - Learner counts stay until you delete them.
 - Saved scripts stay until you delete the files.
 
@@ -36,9 +34,8 @@ It writes no files outside the store. `/runbook save` prints a script for you to
 ## Deleting it
 
 - `/budget wipe` deletes everything above that the plugin stored. Scripts you saved yourself are untouched; delete those files yourself.
-- `/runbook forget <name>` removes one runbook from the list.
 - Uninstalling the plugin stops all collection.
-- `logDecisions`, `runbooks` and `learn` each switch one kind of data off.
+- `logDecisions` and `learn` each switch one kind of data off.
 
 ## Children
 
