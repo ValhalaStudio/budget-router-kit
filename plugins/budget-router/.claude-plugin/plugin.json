@@ -124,6 +124,12 @@
       "title": "Learner mode",
       "description": "live (the learner may move the model and effort one step on evidence), shadow (it learns but never changes the route) or off",
       "default": "live"
+    },
+    "tips": {
+      "type": "boolean",
+      "title": "Token-saving tips",
+      "description": "Show a short tip when the situation calls for it (a long paste, a long turn, repeated failures, a capped day). Shown to you only, at most one every 10 minutes, each once per session. Details in CHEATSHEET.md",
+      "default": true
     }
   }
 }

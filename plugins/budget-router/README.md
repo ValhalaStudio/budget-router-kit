@@ -24,6 +24,7 @@ Claude subscriptions only have a 5-hour and a weekly limit. budget-router splits
 - **Ghost-token guard.** Most of the cost of a long session is context re-read or re-written from the cache. After a long pause a notice shows what re-writing the context will cost (`idleGuard`: `warn` or `off`; it never holds a prompt), and a notice appears when the context passes each multiple of `nudgeContext`.
 - **Learner.** A cost-aware bandit over model and effort. It records, per kind of work and per project, whether each turn went well (few failed tool calls; you did not redo or rephrase it; a thanks counts as a win) and what the turn cost in tokens. It never leaves the rule-based choice without evidence: a cheaper step needs a record that it works here (or a rare, capped exploration on ordinary prompts, never on deep or max ones), and a dearer step needs a record that the rule choice keeps failing. As the daily budget runs out it weighs cost more heavily. Old evidence fades over about two weeks, and a new model id halves the record for that family. `learnMode`: `live` (default), `shadow` (learns, never changes the route) or `off`. Costs are estimates from list prices by model id.
 - **Pinning.** The `pin` option fixes the route: a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`). `auto` (the default) routes every prompt. Usage caps still apply on top of a pin.
+- **Tips.** A short notice when the situation calls for a cheaper habit: a long paste, a build log, a long turn, repeated failed tool calls, a vague broad ask, a capped day, a command you could run yourself. Shown to you only (never added to the conversation), at most one every 10 minutes, each once per session; the `tips` option turns them off. Every habit, with its source, is in [CHEATSHEET.md](CHEATSHEET.md).
 - **Helper agents** (in `agents/`): `scout` (wide searches) and `log-triage` (cuts a long build, cook or test log to its errors) have no shell, only Read, Grep and Glob. `disk-auditor`, `repo-check` (git state before a cleanup or move) and `reviewer` use the shell to measure or run git, and their instructions forbid changing anything; the tool list does not enforce that, so keep Claude's tool approvals on. Claude Code offers them to the model by their own descriptions; the plugin does not point the model at them.
 
 There are no slash commands. Everything is shown in the status bar and in notices, and every setting is a `userConfig` option in `/config`.
@@ -57,13 +58,13 @@ This plugin is a mod (a hooks module), so here is plainly what it can do with th
 
 ## What each hook does
 
-Diagrams of the architecture, the types, one turn, how a route is decided and the budget states are in [ARCHITECTURE.md](ARCHITECTURE.md).
+The habits behind the tips are in [CHEATSHEET.md](CHEATSHEET.md). Diagrams of the architecture, the types, one turn, how a route is decided and the budget states are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Hook | What it does | What it changes |
 |---|---|---|
 | `session.start` | Loads what the plugin stored and hashes the working folder's name. | Nothing; passes the event on with `next(e)`. |
 | `session.measure` | Reads the rate-limit and context figures; updates the status bar; shows a notice and appends a short system note when a usage cap starts. | Nothing in the event; passes it on with `next(e)`. |
-| `prompt.submit` | Reads the typed prompt to choose the route for the turn (rules, then the learner, then pace control, then the usage caps). Shows a notice when a long pause means the context is re-written. | Nothing: the prompt and its context are passed on exactly as received, with `next(e)`. It never drops, holds or rewrites a prompt. |
+| `prompt.submit` | Reads the typed prompt to choose the route for the turn (rules, then the learner, then pace control, then the usage caps). Shows a notice when a long pause means the context is re-written, and at most one tip (`hooks/tips.ts`, fixed texts). | Nothing: the prompt and its context are passed on exactly as received, with `next(e)`. It never drops, holds or rewrites a prompt. |
 | `turn.step` | Sets model and effort for each request of a main-conversation turn. Subagent requests are only ever lowered when a usage cap applies, never raised. | The `model` and `effort` of the request, nothing else. |
 | `tool.call` | Counts failed tool calls since your last prompt (for escalation and the learner). It never looks at what a call was asked to do. | Nothing: every call goes on with `next(e)`, and the hook returns exactly what `next` gives back. |
 | `turn.complete` | Reads the finished turn's token counts and records how the turn went for the learner. | Nothing; returns what `next` gives back. |

@@ -1,12 +1,13 @@
 # budget-router architecture
 
-Three source files, about 1,100 lines, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
+Four source files, about 1,200 lines, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
 
 | File | Role | Engine calls |
 |---|---|---|
 | `hooks/register.ts` | The hooks, session state, the daily budget ledger and the route decision | `$.store`, `$.ui.status`, `$.ui.toast`, `$.session.usage`, `$.session.cwd`, `$.session.append` |
 | `hooks/policy.ts` | Pure routing helpers: Unreal rule, cache-aware switching, pace controller, cost ladder, escalation, context notices | none |
 | `hooks/smart.ts` | The learner: a cost-aware bandit over (model, effort) | none |
+| `hooks/tips.ts` | Fixed-text tips and the rules for when to show one (the caller shows them as a toast) | none |
 | `agents/*.md` | Five helper subagents Claude Code offers by their descriptions; not part of the mod | none |
 
 ## Architecture
@@ -140,6 +141,9 @@ sequenceDiagram
   You->>CC: types a prompt
   CC->>Mod: prompt.submit(text)
   Mod->>Mod: classify -> tier, decide() -> route
+  opt a situation calls for a tip
+    Mod-->>CC: toast only (never added to the conversation)
+  end
   Mod-->>CC: next(e): the prompt unchanged
 
   loop each request of the turn

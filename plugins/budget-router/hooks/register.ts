@@ -9,6 +9,7 @@ import { applyEscalation, escalationFor, idleRebuild, idleText, isUnrealBuildPro
 import type { PacerState } from './policy'
 import { ARMS, DEFAULT_PRICES, REDO_RE, armIndex, armName, correct, emptyStore, exploresLeft, fadeFamily, features, followUp, kindOf, noteExplore, pickArm, priceFor, record, scopeOf, stepBucket, turnCostUsd } from './smart'
 import type { SmartStore, Usage } from './smart'
+import { pickTip } from './tips'
 
 // ---- Types ------------------------------------------------------------------------------------
 
@@ -60,6 +61,7 @@ const FAMILY_FULL = 92 // a model family whose own weekly limit is this full is 
 const LEARN_MIN_SAMPLES = 8
 const LEARN_EXPLORE = 0.1
 const QUALITY_WEIGHT = 0.05
+const TIP_COOLDOWN_MS = 10 * 60_000 // at most one tip in this time
 
 // Store keys. Older versions also kept the keys in RETIRED_KEYS; they are deleted on load.
 const LEDGER_KEY = 'ledger'
@@ -90,6 +92,7 @@ type Opts = {
   paceControl: boolean
   unrealRules: boolean
   escalateOnTrouble: boolean
+  tips: boolean
 }
 
 const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
@@ -139,6 +142,7 @@ function readOptions(options: PluginOptions): Opts {
     paceControl: bool(options.paceControl, true),
     unrealRules: bool(options.unrealRules, true),
     escalateOnTrouble: bool(options.escalateOnTrouble, true),
+    tips: bool(options.tips, true),
   }
 }
 
@@ -163,6 +167,8 @@ let stepsNow = 0 // requests made by the current main turn
 let lastSteps: number | undefined // requests made by the previous main turn
 let lastTurnUsage: Usage = { inp: 2000, out: 1500, cr: 40000, cc: 3000 }
 let lastPromptText = '' // kept in memory only, to spot a quick "try again"
+const tipsShown = new Set<string>() // tips already shown this session
+let lastTipAt = 0
 
 /** What the learner chose for this turn, and what to record once the turn ends. */
 type Pending = { kind: string; project: string; arm: number; base: number; x: number[] }
@@ -483,6 +489,7 @@ export const register: Register = (on, options) => {
       } catch {
         // keep the last known size
       }
+      const failedLast = turnErrors
       turnErrors = 0
       // A quick redo or rephrase means the last turn missed; a thanks means it hit.
       if (learnOn() && lastOutcome && now - lastOutcome.at < 15 * 60_000) {
@@ -505,6 +512,15 @@ export const register: Register = (on, options) => {
       route = decide(c.tier, c.why, p, x, kindOf(e.text))
       pending = decision?.pending
       if (decision?.explored) smartData = noteExplore(smartData, localDay(now))
+      // A contextual tip for the person (a toast, never added to the conversation), at most one every 10 minutes.
+      if (o.tips && now - lastTipAt >= TIP_COOLDOWN_MS) {
+        const tip = pickTip({ text: e.text, kind: kindOf(e.text), lastSteps, failedLast, level: p.level }, tipsShown)
+        if (tip) {
+          tipsShown.add(tip.id)
+          lastTipAt = now
+          $.ui.toast(tip.text, { timeoutMs: 20_000 })
+        }
+      }
     }
     showStatus($, p)
     return next(e)

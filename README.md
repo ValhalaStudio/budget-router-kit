@@ -23,6 +23,8 @@ The status bar under the prompt shows the route, the day / 5-hour / week percent
 
 The plugin itself is small on purpose: one hooks module with six hooks, no commands, no registered tools, nothing added to your prompts, no file or network access. [plugins/budget-router/README.md](plugins/budget-router/README.md) lists every hook and exactly what it reads and changes, and [ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md) has the architecture, class, sequence and decision diagrams.
 
+**Using Claude with fewer tokens:** [plugins/budget-router/CHEATSHEET.md](plugins/budget-router/CHEATSHEET.md) collects the habits that matter (clear and compact, subagents, skills, scripts outside Claude, keeping CLAUDE.md small), each checked against Claude Code's documentation. The plugin shows the relevant one as a notice when the situation comes up.
+
 ## Requirements
 
 Claude Code 2.1.287 or newer, signed in with a Claude subscription (Pro/Max). On an API key there are no rate-limit readings: routing still works, the budget does not.
@@ -42,7 +44,7 @@ Then start a new session with plain `claude`. No flags or settings are needed. A
 
 ## Settings
 
-Everything is a plugin option in `/config`: the tier mapping, the two caps and their thresholds, the wrap-up point, pace control, the cache and idle notices, the learner mode, and `pin`, which fixes the route to a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`); `auto` routes every prompt. Caps still apply on top of a pin.
+Everything is a plugin option in `/config`: the tier mapping, the two caps and their thresholds, the wrap-up point, pace control, the cache and idle notices, the tips, the learner mode, and `pin`, which fixes the route to a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`); `auto` routes every prompt. Caps still apply on top of a pin.
 
 ## How it differs from other tools
 

@@ -9,7 +9,7 @@ Contact: open an issue at https://github.com/ValhalaStudio/budget-router-kit/iss
 | Data | Why | Where it goes |
 |---|---|---|
 | Rate-limit percentages, context size and per-turn token counts that Claude Code reports | To keep you inside a daily budget, warn about expiring caches and estimate what a turn cost | In memory and in the local store |
-| The text of the prompt you type | To choose the model and effort for the turn, and to notice a quick "try again" or "thanks" after the last turn | In memory only, for the current and the next prompt; never stored and never sent |
+| The text of the prompt you type | To choose the model and effort for the turn, to notice a quick "try again" or "thanks" after the last turn, and to pick a tip | In memory only, for the current and the next prompt; never stored and never sent |
 | Whether each tool call failed (not what it did) | To raise effort when a turn goes badly and to learn which model step worked | A counter in memory |
 | The name of the folder Claude Code is working in | To keep the learner's record separate per project | Hashed at once; only the short hash is kept |
 

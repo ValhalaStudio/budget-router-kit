@@ -1,6 +1,6 @@
 # Notes for the directory review (0.11.0)
 
-budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 3 source files (`register.ts` wiring and state, `policy.ts` pure routing helpers, `smart.ts` the learner), about 1,100 lines. `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
+budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 4 source files (`register.ts` wiring and state, `policy.ts` pure routing helpers, `smart.ts` the learner, `tips.ts` fixed-text tips), about 1,200 lines. `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
 
 ## What 0.11.0 removed
 
@@ -14,6 +14,10 @@ budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts
 | Author's study scripts inside the plugin folder (0.10.8 already moved them) | Offline analysis | The plugin folder holds no script. |
 | A second, older learner (`learnMode: classic`) and the burn-rate forecast notice | Superseded by the cost-aware learner and the pace controller | One learner, less code; their stored data is deleted on load. |
 | 18 expert options (model ids, price table, learner tuning, escalation and pace thresholds, cache and idle thresholds) | Tuning | Fixed named constants at the top of `register.ts`; 18 options remain. |
+
+## Tips
+
+`hooks/tips.ts` holds seven fixed texts and the rules for when one applies. A tip is a toast to the person: it is never appended to the conversation or the prompt, uses only signals already in memory for the current prompt (its text and kind label, the previous turn's size and failure count, the cap level), stores nothing, shows at most one per 10 minutes and each once per session, and is switched off by the `tips` option. `CHEATSHEET.md` gives each habit with its source in Claude Code's documentation.
 
 ## The six hooks
 

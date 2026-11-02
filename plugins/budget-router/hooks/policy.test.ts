@@ -457,3 +457,38 @@ describe('wrap-up notice', () => {
     expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
   })
 })
+
+describe('tips in the engine', () => {
+  const longPaste = `${'log line with an error in it\n'.repeat(80)}`
+  const appended: unknown[] = []
+
+  test('a long paste shows one tip, a toast only, and nothing is added to the prompt', async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    kit(on, { toasts })
+    on('session.append', async (_$: unknown, e: unknown) => { appended.push(e); return { value: undefined } as never })
+    const r = await submit($, longPaste)
+    expect(toasts.filter(t => t.includes('long paste'))).toHaveLength(1)
+    expect(r.text).toBe(longPaste)
+    expect(r.context).toBeUndefined()
+    expect(appended).toHaveLength(0)
+  })
+
+  test('the same tip is not repeated, and a second tip waits for the cooldown', async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    kit(on, { toasts })
+    await submit($, longPaste)
+    await submit($, longPaste)
+    await submit($, 'improve the codebase')
+    expect(toasts.filter(t => /long paste|broad ask/.test(t))).toHaveLength(1)
+  })
+
+  test('the tips option switches them off', { options: { tips: false } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    kit(on, { toasts })
+    await submit($, longPaste)
+    expect(toasts.some(t => /long paste/.test(t))).toBe(false)
+  })
+})

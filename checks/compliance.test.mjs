@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 const root = join(import.meta.dirname, '..', 'plugins', 'budget-router')
 const read = (...p) => readFileSync(join(root, ...p), 'utf8')
-const code = ['register.ts', 'policy.ts', 'smart.ts'].map(f => ({ f, text: read('hooks', f) }))
+const code = ['register.ts', 'policy.ts', 'smart.ts', 'tips.ts'].map(f => ({ f, text: read('hooks', f) }))
 // Comments may mention what the plugin avoids; the checks look at code only.
 // Only comments that start a line, or ` // ` after code, so a regex literal holding `/*` or `//` is left alone.
 const stripComments = (s) => s.replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, (m) => m.replace(/[^\n]/g, '')).replace(/^[ \t]*\/\/.*$/gm, '').replace(/[ \t]+\/\/ .*$/gm, '')
@@ -51,6 +51,13 @@ describe('calls the plugin must not make', () => {
     const body = hookBody('tool.call')
     assert.ok(body.includes('const r = await next(e)') && body.includes('return r'))
     assert.ok(!/return\s*\{/.test(body), 'never answers a call itself')
+  })
+
+  test('tips are a toast to the person and nothing else', () => {
+    assert.ok(!/\$\./.test(stripComments(code[3].text)), 'tips.ts makes no engine call')
+    const body = hookBody('prompt.submit')
+    assert.ok(body.includes('$.ui.toast(tip.text'), 'a tip is shown as a toast')
+    assert.ok(!/append|context:/.test(body.slice(body.indexOf('pickTip'))), 'a tip is never added to the conversation')
   })
 
   test('the other listening hooks pass the event on', () => {
