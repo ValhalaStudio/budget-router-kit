@@ -70,3 +70,12 @@ The directory now names a file for each note. Each is answered in 0.10.7:
 | 21 | MOD_HOOKS_POLICY_EVENT / MOD_HOOKS_OPERATION | "Say in the plugin's README what the hook changes / does" (prompt.context, prompt.submit) | Addressed | The README hook table now says exactly what each changes. `prompt.context` appends one fixed block named `budgetRouter` and passes everything else on as `next` returns it. `prompt.submit` passes the typed text on unchanged and can only add one hint line to the hidden context. |
 
 Checked again: `claude plugin validate` passes, `claude plugin test` passes (94 tests), `node --test checks/compliance.test.mjs` passes (15 checks).
+
+## Fourth round (0.10.7: "no new findings, 2 fixed"; still held)
+
+0.10.7 cleared RUNTIME_FETCH_EXEC and MOD_CALL_NAMED_IN_TEXT. Renaming the token-named options did not clear the credential warning, so in 0.10.8:
+
+| # | Note | Status | What was done |
+|---|---|---|---|
+| 22 | "Uses a credential from the user's machine … `.claude-plugin/plugin.json`" | Addressed by removal | The plugin's code reads no credential. The only shipped files that read anything from the user's machine were the author's study scripts in `plugins/budget-router/study/`. `extract.py` read `~/.claude/projects` (the folder that also holds Claude's credentials file) and started `node`. These scripts are not part of the plugin; nothing in the plugin runs them. They now live in `study/` at the repository root, outside the plugin folder the directory fetches (25 files went down to 19). The plugin folder now holds only the manifest, icon, hooks, two commands, five agents, README, PRIVACY and LICENSE. |
+| 19 | "Mod may answer a tool call in place of the tool" | Reviewer to confirm | Unchanged; see row 19. This is how a registered tool is served. |

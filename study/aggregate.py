@@ -95,7 +95,7 @@ if __name__ == '__main__':
         print('  rejected:', os.path.basename(f))
     out = render(table, len(good))
     if '--write' in sys.argv:
-        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks', 'prior.ts')
+        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'plugins', 'budget-router', 'hooks', 'prior.ts')
         open(target, 'w', encoding='utf8', newline='\n').write(out)
         print('wrote', os.path.normpath(target))
     else:

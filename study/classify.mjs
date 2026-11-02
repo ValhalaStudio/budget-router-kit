@@ -1,7 +1,7 @@
 // Runs the plugin's own kindOf and followUp over a batch, so the study and the plugin cannot drift.
 // stdin: {"texts": [...], "pairs": [[prev, next, gapMs], ...]}  stdout: {"kinds": [...], "follows": [...]}
-import { kindOf, followUp } from '../hooks/smart.ts'
-import { REDO_RE } from '../hooks/policy.ts'
+import { kindOf, followUp } from '../plugins/budget-router/hooks/smart.ts'
+import { REDO_RE } from '../plugins/budget-router/hooks/policy.ts'
 
 let raw = ''
 for await (const chunk of process.stdin) raw += chunk
