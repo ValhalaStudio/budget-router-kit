@@ -1,5 +1,6 @@
 // Pure routing helpers: no engine calls, so tests run them directly.
 // Sections: Unreal rule, cache-aware switching, pace controller, cost ladder, escalation, context notices.
+import { DEFAULT_PRICES } from './smart'
 
 export type Family = 'haiku' | 'sonnet' | 'opus'
 export type EffortName = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -107,25 +108,18 @@ export function applyEscalation(spec: LadderSpec, esc: Escalation): LadderSpec {
 
 // -- Context notices (idle cache rebuild, large context) -------------------------------------
 
-/** List prices in USD per million tokens: cache read and 1-hour cache write. */
-const CACHE_PRICE: Record<Family, { read: number; write: number }> = {
-  opus: { read: 0.2, write: 5 },
-  sonnet: { read: 0.2, write: 2.5 },
-  haiku: { read: 0.1, write: 1.25 },
-}
-
 export const usd = (n: number): string => (n < 0.01 ? '<$0.01' : n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`)
 export const kTokens = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 
 /** What one more step costs just to re-read a context of this size from the cache. */
-export const stepReadUsd = (ctx: number, family: Family): number => (ctx * CACHE_PRICE[family].read) / 1e6
+export const stepReadUsd = (ctx: number, family: Family): number => (ctx * DEFAULT_PRICES[family].read) / 1e6
 
 export type IdleRebuild = { ctx: number; idleMin: number; rebuildUsd: number; warmUsd: number }
 
 /** After a long pause the cache has expired, so the next prompt re-writes the whole context. */
 export function idleRebuild(ctx: number, sinceLastMs: number | undefined, warmMs: number, minTokens: number, family: Family): IdleRebuild | undefined {
   if (sinceLastMs === undefined || sinceLastMs <= warmMs || ctx < minTokens) return undefined
-  const pr = CACHE_PRICE[family]
+  const pr = DEFAULT_PRICES[family]
   return { ctx, idleMin: Math.round(sinceLastMs / 60_000), rebuildUsd: (ctx * pr.write) / 1e6, warmUsd: (ctx * pr.read) / 1e6 }
 }
 

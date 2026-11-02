@@ -13,7 +13,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 PROJECTS = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser('~/.claude/projects')
 OUT = sys.argv[2] if len(sys.argv) > 2 else 'turns.jsonl'
@@ -21,7 +21,8 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else 'turns.jsonl'
 
 # USD per million tokens: (in, out, cache read, cache write); first match wins
 PRICES = [('haiku-5', (0.1, 0.5, 0.01, 0.125)), ('haiku', (1, 5, 0.1, 1.25)), ('sonnet-4', (3, 15, 0.3, 3.75)),
-          ('sonnet', (2, 10, 0.2, 2.5)), ('fable', (10, 50, 0.25, 12.5)), ('opus-5-5', (4, 20, 0.2, 5)), ('opus', (5, 25, 0.5, 6.25))]
+          ('sonnet', (2, 10, 0.2, 2.5)), ('fable', (10, 50, 0.25, 12.5)), ('mythos', (10, 50, 0.25, 12.5)),
+          ('opus-5-5', (4, 20, 0.2, 5)), ('opus', (5, 25, 0.5, 6.25))]
 
 
 def price(model):
@@ -42,7 +43,14 @@ def prompt_text(d):
 
 
 def when(ts):
-    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def dedup_key(d):
+    """A request's identity (requestId, message id); None when either is missing, so such lines are not merged."""
+    rid, mid = d.get('requestId'), (d.get('message') or {}).get('id')
+    return (rid, mid) if rid is not None and mid is not None else None
 
 
 def classify(texts, pairs):
@@ -65,11 +73,11 @@ for f in glob.glob(os.path.join(PROJECTS, '**', '*.jsonl'), recursive=True):
         except ValueError:
             lines.append({})
     # A request appears on several lines (one per content block) with the same usage: count it once.
-    last = {(d.get('requestId'), (d.get('message') or {}).get('id')): i for i, d in enumerate(lines) if d.get('type') == 'assistant'}
+    last = {dedup_key(d): i for i, d in enumerate(lines) if d.get('type') == 'assistant' and dedup_key(d) is not None}
     for i, d in enumerate(lines):
         if d.get('isSidechain'):
             continue
-        if d.get('type') == 'assistant' and last.get((d.get('requestId'), (d.get('message') or {}).get('id'))) != i:
+        if d.get('type') == 'assistant' and dedup_key(d) is not None and last.get(dedup_key(d)) != i:
             continue
         t = d.get('type')
         if t == 'user':

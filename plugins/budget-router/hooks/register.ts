@@ -6,17 +6,14 @@
 // See ARCHITECTURE.md for diagrams.
 import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
 import { applyEscalation, escalationFor, idleRebuild, idleText, isUnrealBuildPrompt, pacerStep, paceSteps, shiftLadder, shouldStick, sizeBucket, sizeNudgeText, targetPercent } from './policy'
-import type { PacerState } from './policy'
+import type { EffortName as Effort, Family, LadderSpec as Spec, PacerState } from './policy'
 import { ARMS, DEFAULT_PRICES, REDO_RE, armIndex, armName, correct, emptyStore, exploresLeft, fadeFamily, features, followUp, kindOf, noteExplore, pickArm, priceFor, record, scopeOf, stepBucket, turnCostUsd } from './smart'
 import type { SmartStore, Usage } from './smart'
 import { pickTip } from './tips'
 
 // ---- Types ------------------------------------------------------------------------------------
 
-type Family = 'haiku' | 'sonnet' | 'opus'
-type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type Tier = 'trivial' | 'light' | 'standard' | 'deep' | 'max'
-type Spec = { family: Family; effort: Effort }
 type Route = Spec & { tier: Tier; why: string }
 type Pin = { tier?: Tier; spec?: Spec }
 
@@ -198,7 +195,7 @@ const aboveOpus = (model: string) => /fable|mythos/i.test(model) // priced and r
  */
 function targetModel(f: Family, current: string): string | undefined {
   if (learned[f]) return learned[f]
-  if (/^claude-(haiku|sonnet|opus)-\d+(-\d+)?$/i.test(current)) return current.replace(/haiku|sonnet|opus/i, f)
+  if (/^claude-(haiku|sonnet|opus)-\d+(-\d{1,2})?$/i.test(current)) return current.replace(/haiku|sonnet|opus/i, f)
   return /^claude-(fable|mythos)/i.test(current) ? KNOWN_IDS[f] : undefined
 }
 
@@ -215,7 +212,7 @@ const nextMidnight = (ms: number) => {
 // ---- Store --------------------------------------------------------------------------------------
 
 async function loadStore($: EngineInterface) {
-  for (const key of RETIRED_KEYS) await $.store.delete(key)
+  await Promise.all(RETIRED_KEYS.map(key => $.store.delete(key)))
   const stored = (await $.store.get(SMART_KEY)) as (Omit<SmartStore, 'v'> & { v?: number }) | undefined
   // Version 1 weights were partly trained on hashed words of prompts: dropped; the counts are kept.
   smartData = stored ? { ...stored, v: 2, weights: stored.v === 2 ? stored.weights : {} } : emptyStore()
@@ -362,7 +359,7 @@ function decide(tier: Tier, why: string, p: Pressure, x: number[], kind: string)
   // "Think hard" and a pinned route are left alone by pace control.
   const shed = o.paceControl && !pin && tier !== 'max' ? paceSteps(pacerU) : 0
   if (shed > 0) {
-    spec = shiftLadder(spec, shed) as Spec
+    spec = shiftLadder(spec, shed)
     notes.push(`pace -${shed}`)
   }
   if (p.level === 1) spec = capSpec(spec, o.warnCap)
@@ -383,7 +380,7 @@ function escalate(e: { turnId: string; index: number }, base: Spec): Spec {
     if (esc.effortUp || esc.modelUp) escalation = { turnId: e.turnId, effortUp: esc.effortUp || escalation?.effortUp === true, modelUp: esc.modelUp || escalation?.modelUp === true }
   }
   if (!escalation) return base
-  const raised = applyEscalation(base, escalation) as Spec
+  const raised = applyEscalation(base, escalation)
   return level >= 2 ? capSpec(raised, o.criticalCap) : level === 1 ? capSpec(raised, o.warnCap) : raised
 }
 
@@ -444,12 +441,16 @@ export const register: Register = (on, options) => {
 
   // Loads what the plugin stored and hashes the working folder's name. Changes nothing.
   on('session.start', async ($, e, next) => {
-    await detectProject($)
-    learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
-    const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
+    const [, models, savedPacer, ledger] = await Promise.all([
+      detectProject($),
+      $.store.get(MODELS_KEY),
+      $.store.get(PACER_KEY) as Promise<PacerState | undefined>,
+      loadLedger($),
+      loadStore($),
+    ])
+    learned = (models as typeof learned | undefined) ?? {}
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
-    await loadStore($)
-    const p = pressure(await loadLedger($), Date.now())
+    const p = pressure(ledger as Ledger | undefined, Date.now())
     level = p.level
     showStatus($, p)
     return next(e)
@@ -520,9 +521,11 @@ export const register: Register = (on, options) => {
       let c = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : classify(e.text, route?.tier)
       // Build, link and cook errors need more than the two cheapest tiers.
       if (o.unrealRules && !pin && isUnrealBuildPrompt(e.text) && (c.tier === 'trivial' || c.tier === 'light')) c = { tier: 'standard', why: `${c.why}; unreal build text` }
-      const x = features(e.text, ctxTokens, stepBucket(lastSteps))
+      // The learner's features are only read when it chooses; nothing else uses them.
+      const kind = kindOf(e.text)
+      const x = learnOn() && !pin ? features(e.text, ctxTokens, stepBucket(lastSteps)) : []
       stepsNow = 0
-      route = decide(c.tier, c.why, p, x, kindOf(e.text))
+      route = decide(c.tier, c.why, p, x, kind)
       pending = decision?.pending
       if (decision?.explored) smartData = noteExplore(smartData, localDay(now))
       // A contextual tip for the person (a toast, never added to the conversation), at most one every 10 minutes.

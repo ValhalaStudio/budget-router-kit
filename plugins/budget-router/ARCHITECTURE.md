@@ -1,6 +1,6 @@
 # budget-router architecture
 
-Four source files, about 1,200 lines, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
+Four source files, no dependencies. Everything runs inside Claude Code; nothing leaves the machine.
 
 | File | Role | Engine calls |
 |---|---|---|

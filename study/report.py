@@ -20,7 +20,8 @@ from datetime import datetime, timedelta, timezone
 
 # USD per million tokens: (input, output, cache read, cache write); first match wins. Mirrors hooks/smart.ts.
 PRICES = [('haiku-5', (0.1, 0.5, 0.01, 0.125)), ('haiku', (1, 5, 0.1, 1.25)), ('sonnet-4', (3, 15, 0.3, 3.75)),
-          ('sonnet', (2, 10, 0.2, 2.5)), ('fable', (10, 50, 0.25, 12.5)), ('opus-5-5', (4, 20, 0.2, 5)), ('opus', (5, 25, 0.5, 6.25))]
+          ('sonnet', (2, 10, 0.2, 2.5)), ('fable', (10, 50, 0.25, 12.5)), ('mythos', (10, 50, 0.25, 12.5)),
+          ('opus-5-5', (4, 20, 0.2, 5)), ('opus', (5, 25, 0.5, 6.25))]
 ASSUMED_EFFORT_OUT = {'low': 0.7, 'medium': 1.0, 'high': 1.4, 'xhigh': 1.9, 'max': 2.6}  # the learner's cost guess (smart.ts)
 CACHE_TTL_S = 3600  # a subscription's prompt cache; after a longer pause the context is re-written
 EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -43,9 +44,17 @@ def price(model):
 
 def parse_ts(ts):
     try:
-        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
     except (ValueError, AttributeError):
         return None
+    # A timestamp without a zone is taken as UTC, so it can be compared with the aware cut-off.
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def dedup_key(d):
+    """A request's identity: its requestId and message id. None when either is missing (such lines are not merged)."""
+    rid, mid = d.get('requestId'), (d.get('message') or {}).get('id')
+    return (rid, mid) if rid is not None and mid is not None else None
 
 
 def prompt_len(d):
@@ -70,8 +79,8 @@ def load(projects, since):
                 lines.append({})
         last = {}
         for i, d in enumerate(lines):
-            if d.get('type') == 'assistant':
-                last[(d.get('requestId'), (d.get('message') or {}).get('id'))] = i
+            if d.get('type') == 'assistant' and dedup_key(d) is not None:
+                last[dedup_key(d)] = i
         sess = os.path.basename(path)
         turn = None
         for i, d in enumerate(lines):
@@ -83,7 +92,7 @@ def load(projects, since):
                     turns.append(turn)
                 elif turn is not None and isinstance(d.get('message', {}).get('content'), list):
                     turn['errors'] += sum(1 for b in d['message']['content'] if b.get('type') == 'tool_result' and b.get('is_error'))
-            elif t == 'assistant' and last.get((d.get('requestId'), (d.get('message') or {}).get('id'))) == i:
+            elif t == 'assistant' and (dedup_key(d) is None or last.get(dedup_key(d)) == i):
                 m = d.get('message') or {}
                 u = m.get('usage') or {}
                 p = price(m.get('model'))
@@ -139,7 +148,9 @@ def analyse(reqs, turns):
     a['top5_share'] = pct(sum(top), main_total)
     longs = [t for t in turns if len(t['reqs']) >= 30]
     a['long_turns'] = len(longs)
-    a['long_share'] = pct(sum(sum(r['cost'] for r in t['reqs']) for t in longs), main_total)
+    long_cost = sum(sum(r['cost'] for r in t['reqs']) for t in longs)
+    a['long_share'] = pct(long_cost, main_total)  # share of main-chat spend
+    a['long_share_total'] = pct(long_cost, total)  # share of all spend, same basis as the subagent share
     bad = [t for t in turns if t['errors'] >= 3]
     a['bad_turns'] = len(bad)
     a['bad_share'] = pct(sum(sum(r['cost'] for r in t['reqs']) for t in bad), main_total)
@@ -220,9 +231,9 @@ def conclusions(a, store):
                     f"{a['bad_turns']} turns had three or more failed tool calls. Each retry re-reads the whole conversation.",
                     'Stop retrying after the second failure: /rewind to before it went wrong and re-ask with the exact error.'))
     sub = pct(a['side'], t)
-    if sub < 5 and a['long_share'] >= 25:
+    if sub < 5 and a['long_share_total'] >= 25:
         out.append(('Subagents are barely used, and long turns are expensive',
-                    f"Subagents are {sub:.0f}% of spend while turns of 30+ requests are {a['long_share']:.0f}% of main-chat spend.",
+                    f"Subagents are {sub:.0f}% of spend while turns of 30+ requests are {a['long_share_total']:.0f}% of all spend.",
                     'Wide searches and log reads are the best candidates for a subagent (scout, log-triage): the reading stays out of your main context.'))
     r = a['rank']
     if ('opus', 'medium') in r and ('opus', 'xhigh') in r and r[('opus', 'xhigh')]['n'] >= 20 and r[('opus', 'medium')]['n'] >= 20:
@@ -258,7 +269,7 @@ th:first-child,td:first-child{text-align:left}.c{background:var(--card);border:1
 """
 
 
-def render(a, store, reqs, days):
+def render(a, store, days):
     e = html.escape
     t = a['total'] or 1
     parts = [('Cache reads', 'c_cr', '#2f6fed'), ('Cache writes', 'c_cc', '#7c5cff'), ('Output', 'c_out', '#1d8a5b'), ('Fresh input', 'c_inp', '#b7791f')]
@@ -288,7 +299,7 @@ def render(a, store, reqs, days):
                 continue
             ratio = f"{r['out'] / max(1.0, base['out']):.2f}x" if base and base['n'] >= 20 and r['n'] >= 20 else '–'
             flag = '' if r['n'] >= 20 else ' <span class="muted">(few)</span>'
-            rows.append(f"<tr><td>{fam}·{eff}{flag}</td><td>{r['n']:,}</td><td>{r['out']:.0f}</td><td>{r['think']:.0f}</td><td>{usd(r['cost']).replace('$', '$')}</td><td>{ratio}</td><td>{ASSUMED_EFFORT_OUT[eff]:.1f}x</td></tr>")
+            rows.append(f"<tr><td>{fam}·{eff}{flag}</td><td>{r['n']:,}</td><td>{r['out']:.0f}</td><td>{r['think']:.0f}</td><td>{usd(r['cost'])}</td><td>{ratio}</td><td>{ASSUMED_EFFORT_OUT[eff]:.1f}x</td></tr>")
     h.append('<table><tr><th>Model·effort</th><th>Requests</th><th>Avg output tokens</th><th>Avg thinking tokens</th><th>Avg $/request</th><th>Output vs medium (measured)</th><th>Assumed</th></tr>' + ''.join(rows) + '</table>')
     if store:
         g = store.get('cells', {}).get('g', {})
@@ -317,7 +328,7 @@ def main():
     a = analyse(reqs, turns)
     store = load_store(args.store)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    open(args.out, 'w', encoding='utf8').write(render(a, store, reqs, args.days))
+    open(args.out, 'w', encoding='utf8').write(render(a, store, args.days))
     print(f"{a['n_req']:,} requests, {a['n_turns']:,} prompts, about {usd(a['total'])} at list prices -> {args.out}")
     for title, ev, do in conclusions(a, store):
         print(f"\n* {title}\n  {ev}\n  -> {do}")
