@@ -2,7 +2,7 @@
 
 **Stay inside your Claude weekly limit without thinking about it.** A community plugin for Claude Code (not made or endorsed by Anthropic) that routes each prompt to the right model and effort, keeps you inside a daily usage budget, and shows you cheaper habits when they matter.
 
-Claude subscriptions have only a 5-hour and a weekly limit. budget-router splits what is left of the weekly limit evenly over the days until it resets, watches how much of today's share you have used, and tightens the model choice as it runs down. It works in Claude Code only (the terminal and the desktop app's Code tab), not in claude.ai chat.
+Claude subscriptions have only a 5-hour and a weekly limit. budget-router splits what is left of the weekly limit evenly over the days until it resets, watches how much of today's share you have used, and tightens the model choice as it runs down. It is listed for Claude Code (the terminal and the desktop app's Code tab) and for Cowork, and has been tested in Claude Code only. It cannot see or change a chat in claude.ai.
 
 ```
 sonnet·high (standard) │ day 42% │ 5h 12% │ week 61% │ saved $3.10      ← the status bar under your prompt

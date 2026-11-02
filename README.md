@@ -77,7 +77,7 @@ Everything runs on your machine; no prompt text is kept and nothing is uploaded.
 
 **What if my company restricts the models I can use?** It only acts on models it recognises, prefers model ids your session has already used, and swaps within the same generation only for plain ids such as `claude-sonnet-4-5`. A dated or provider-specific id is left alone, so the request stays on the model Claude Code chose. If routing does not fit your setup, set the `pin` option, or turn the plugin off.
 
-**Does it work in claude.ai chat or the desktop app?** Only Claude Code (the terminal and the desktop app's Code tab). It cannot see or change a chat in the browser.
+**Does it work in claude.ai chat, the desktop app or Cowork?** It is listed for Claude Code (the terminal and the desktop app's Code tab) and for Cowork, and the author has tested it in Claude Code only. It cannot see or change a chat in the browser.
 
 **Can I turn parts off, or choose myself?** Yes, in `/config`: tips, the idle-cache notice, the large-context notice, pace control, escalation, the learner and the Unreal rule are each an option, and `pin` fixes the route (a tier such as `deep`, or a model with an optional effort such as `sonnet:low`). Caps still apply on top of a pin.
 
@@ -116,7 +116,7 @@ What no other tool I found does: treat the weekly limit as a daily budget, and l
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Checks | `claude plugin validate` and `claude plugin test` in `plugins/budget-router`, `node --test checks/compliance.test.mjs`, `node checks/directory-replica.mjs` |
 
-Not tested by the author: macOS and Linux, API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
+Not tested by the author: Cowork, macOS and Linux, API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
 
 ## Update and remove
 
