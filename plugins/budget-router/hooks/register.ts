@@ -5,7 +5,7 @@
 // Reading order: types, fixed values, options, session state, budget ledger, route decision, notices, hooks.
 // See ARCHITECTURE.md for diagrams.
 import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
-import { applyEscalation, escalationFor, idleRebuild, idleText, isUnrealBuildPrompt, pacerStep, paceSteps, shiftLadder, shouldStick, sizeBucket, sizeNudgeText, targetPercent } from './policy'
+import { EFFORT_RANK, FAMILY_RANK, applyEscalation, escalationFor, idleRebuild, idleText, isUnrealBuildPrompt, pacerStep, paceSteps, shiftLadder, shouldStick, sizeBucket, sizeNudgeText, targetPercent } from './policy'
 import type { EffortName as Effort, Family, LadderSpec as Spec, PacerState } from './policy'
 import { ARMS, DEFAULT_PRICES, REDO_RE, armIndex, armName, correct, emptyStore, exploresLeft, fadeFamily, features, followUp, kindOf, noteExplore, pickArm, priceFor, record, scopeOf, stepBucket, turnCostUsd } from './smart'
 import type { SmartStore, Usage } from './smart'
@@ -173,8 +173,8 @@ let pending: Pending | undefined
 let lastOutcome: (Pending & { ok: boolean; at: number }) | undefined
 
 const learnOn = () => o.learnMode !== 'off'
-const rankF = (f: Family) => FAMILIES.indexOf(f)
-const rankE = (e: Effort) => EFFORTS.indexOf(e)
+const rankF = (f: Family) => FAMILY_RANK[f]
+const rankE = (e: Effort) => EFFORT_RANK[e]
 const capSpec = (s: Spec, cap: Spec): Spec => ({
   family: rankF(s.family) > rankF(cap.family) ? cap.family : s.family,
   effort: rankE(s.effort) > rankE(cap.effort) ? cap.effort : s.effort,

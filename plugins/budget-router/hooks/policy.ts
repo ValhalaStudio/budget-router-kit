@@ -69,8 +69,8 @@ const LADDER: ReadonlyArray<LadderSpec> = [
   { family: 'opus', effort: 'high' },
   { family: 'opus', effort: 'xhigh' },
 ]
-const EFFORT_RANK: Record<EffortName, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
-const FAMILY_RANK: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2 }
+export const EFFORT_RANK: Record<EffortName, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+export const FAMILY_RANK: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2 }
 const costKey = (s: LadderSpec) => FAMILY_RANK[s.family] * 10 + EFFORT_RANK[s.effort]
 
 /** Index of the dearest ladder rung that is not dearer than the spec. */

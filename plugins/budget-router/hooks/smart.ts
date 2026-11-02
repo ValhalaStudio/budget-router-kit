@@ -82,7 +82,8 @@ function hash(s: string): number {
 export type Momentum = 'none' | 'short' | 'mid' | 'long'
 
 /** How big the previous turn in this session was (assistant steps): long turns tend to follow long turns. */
-export const stepBucket = (steps: number | undefined): Momentum => (steps === undefined ? 'none' : steps >= 30 ? 'long' : steps >= 10 ? 'mid' : 'short')
+export const LONG_TURN_STEPS = 30
+export const stepBucket = (steps: number | undefined): Momentum => (steps === undefined ? 'none' : steps >= LONG_TURN_STEPS ? 'long' : steps >= 10 ? 'mid' : 'short')
 
 /**
  * Shape features only: length band, whether there is code or a file name, context size band and the

@@ -3,6 +3,8 @@
 // added to the conversation. Each rule uses only what the plugin already holds in memory for the
 // current prompt: its text, its kind label, the previous turn's size and failure count, the cap level.
 // CHEATSHEET.md has the longer version of every habit named here, with its source.
+import { isUnrealBuildPrompt } from './policy'
+import { LONG_TURN_STEPS } from './smart'
 
 export type TipSignals = {
   text: string // the typed prompt, in memory only
@@ -14,12 +16,10 @@ export type TipSignals = {
 
 export type Tip = { id: string; text: string }
 
-const LONG_TURN_STEPS = 30
 const FAILED_TOOL_CALLS = 3
 const LONG_PASTE_CHARS = 1500
 const BUILD_LOG_CHARS = 800
 const VAGUE = /\b(improve|clean ?up|optimi[sz]e|refactor|review|fix|check)\b[^.\n]{0,25}\b(the )?(whole |entire |all (of )?(the )?)?(code ?base|project|repo(sitory)?|everything)\b/i
-const BUILD_ERROR = /\b(UnrealBuildTool|UBT|UHT|RunUAT|LNK\d{3,4}|error C\d{4}|BUILD FAILED|LogCook)\b/i
 
 /** Each rule: an id (a tip is shown once per session), when it applies, and what to say. */
 const RULES: ReadonlyArray<{ id: string; when: (s: TipSignals) => boolean; text: (s: TipSignals) => string }> = [
@@ -35,7 +35,7 @@ const RULES: ReadonlyArray<{ id: string; when: (s: TipSignals) => boolean; text:
   },
   {
     id: 'build-log',
-    when: s => s.text.length >= BUILD_LOG_CHARS && BUILD_ERROR.test(s.text),
+    when: s => s.text.length >= BUILD_LOG_CHARS && isUnrealBuildPrompt(s.text),
     text: () => 'Build and cook logs run to thousands of lines, and everything you paste is re-read on every later request. Paste only the first error with a few lines around it, or let a helper agent cut the log down.',
   },
   {
