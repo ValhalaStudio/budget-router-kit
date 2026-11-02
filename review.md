@@ -33,6 +33,20 @@ Engine calls: `$.store`, `$.ui.status`, `$.ui.toast`, `$.session.usage`, `$.sess
 - **"Say in the README what the hook does / changes."** The table in the plugin README, column "What it changes".
 - **Icon passed without a code check.** It is a PNG image.
 
+## Software Directory Policy and Terms
+
+| Item | How budget-router meets it |
+|---|---|
+| 1A Usage Policy; Consumer Terms on automation and limits | Runs only inside the user's own Claude Code session and only on turns the user starts; makes no requests of its own; never bypasses, resets or pools a usage limit. It keeps use below the limit. |
+| 1C safeguards and system instructions | Sets model and effort only. Adds nothing to prompts or the system prompt; the one appended system note states that a usage cap applies, shown to the user too. |
+| 1E/1G data, conversation content, profiles | Prompt text is read in memory to choose the route and never stored. Stored: budget ledger, pace samples, and learner counts keyed by a fixed kind label, a fixed topic label and a hash of the project folder; learner weights use prompt shape only (length, code, file name, context size, previous turn size). Version 1 weights, which also used hashed words, are dropped on load. |
+| 2B descriptions match functionality | `scout` and `log-triage` have no shell. `disk-auditor`, `repo-check` and `reviewer` say they use the shell and are instructed not to change anything. |
+| 2F/2G no fetched or hidden instructions | Nothing is fetched; source is plain TypeScript; no encoded text. |
+| 3A privacy policy | `plugins/budget-router/PRIVACY.md` (use as the listing's privacy policy link). |
+| 3B-3E support, docs, testing, examples | GitHub issues; README with troubleshooting; no account or test data needed; three examples. |
+| Terms: security reports | `SECURITY.md`, private vulnerability reporting enabled on the repository. |
+| Naming | Product name `budget-router`; README states it is a community plugin, not made or endorsed by Anthropic. |
+
 ## Checked
 
-`claude plugin validate` passes, `claude plugin test` passes, `node --test checks/compliance.test.mjs` passes. Submission setting: "This plugin collects or transmits user data" = No.
+`claude plugin validate` passes, `claude plugin test` passes, `node --test checks/compliance.test.mjs` passes, and `node checks/directory-replica.mjs` (a local stand-in for the pipeline, calibrated against the findings this plugin received in earlier rounds) predicts one hold, `MOD_PRESENT`, and one note on `prompt.submit`. Submission setting: "This plugin collects or transmits user data" = No.

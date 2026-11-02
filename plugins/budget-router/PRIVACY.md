@@ -17,7 +17,7 @@ It does not read your conversation history, memory, summaries, files or uploaded
 
 ## What it stores on your computer
 
-In the plugin's own store (one file in `~/.claude/plugins/store/` whose name starts with `budget-router_`): the usage ledger, model ids seen, burn-rate samples, pace-controller state, the learner's counts and token costs per kind of work and per project (the project is the short hash, never the path), and a table of hashed word weights that lets it generalise (256 numbers; the words themselves are not kept and cannot be recovered from them). No prompt text.
+In the plugin's own store (one file in `~/.claude/plugins/store/` whose name starts with `budget-router_`): the usage ledger, model ids seen, burn-rate samples, pace-controller state, the learner's counts and token costs per kind of work and per project (the project is the short hash, never the path), and 256 weights over the shape of prompts (length band, whether there is code or a file name, context size, the previous turn's size) that let it generalise. No prompt text and no words of a prompt are stored. The only things derived from a prompt are two fixed labels chosen by keyword rules in the source: its kind (go, question, change, research, paste, shell, chat or ask) and its topic (unreal, git, docs, system, code or general).
 
 It writes no files outside the store. Data that older versions kept and this one has no use for (a decision log and the text of repeated shell commands) is deleted when the plugin starts.
 

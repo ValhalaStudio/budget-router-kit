@@ -28,6 +28,10 @@ describe('prior', () => {
   test('features are stable and bounded', () => {
     expect(features('fix the bug in foo.ts').every(i => i >= 0 && i < 256)).toBe(true)
   })
+  test('features use the shape of a prompt, never its words', () => {
+    expect(features('fix the parser now').join(',')).toBe(features('add a new tab here').join(','))
+    expect(features('fix the parser now').join(',') === features('x'.repeat(900)).join(',')).toBe(false)
+  })
 })
 
 describe('hierarchy', () => {

@@ -401,7 +401,9 @@ const RETIRED_KEYS = ['cmdstats', 'runbooks', 'decisions']
 async function loadV06($: EngineInterface) {
   for (const key of RETIRED_KEYS) await $.store.delete(key)
   learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
-  smartData = ((await $.store.get(SMART_KEY)) as SmartStore | undefined) ?? emptyStore()
+  const stored = (await $.store.get(SMART_KEY)) as (Omit<SmartStore, 'v'> & { v?: number }) | undefined
+  // Version 1 weights were partly trained on hashed words of prompts: dropped, the counts are kept.
+  smartData = stored ? { ...stored, v: 2, weights: stored.v === 2 ? stored.weights : {} } : emptyStore()
   v06Loaded = true
 }
 

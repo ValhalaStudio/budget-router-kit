@@ -176,7 +176,7 @@ export type Counts = { s: number; f: number }
 export type Learned = Record<string, Record<string, Counts>>
 
 const DOMAINS: ReadonlyArray<[string, RegExp]> = [
-  ['unreal', /unreal|\bue ?[45]\b|uproject|blueprint|uasset|\bubt\b|lyra|niagara|pilgerweg/i],
+  ['unreal', /unreal|\bue ?[45]\b|uproject|blueprint|uasset|\bubt\b|lyra|niagara/i],
   ['git', /\bgit\b|commit|branch|merge|pull request|\bpush\b|rebase/i],
   ['docs', /readme|documentation|write[- ]?up|explain|summar|diagram|report/i],
   ['system', /disk|storage|drive|folder|install|uninstall|delete|move|junction|registry|service/i],

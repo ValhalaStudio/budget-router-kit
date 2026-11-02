@@ -1,6 +1,6 @@
-# budget-router for Claude Code
+# budget-router
 
-Picks the model and effort for every turn, guards a daily usage budget, and learns what is enough for your kind of work.
+A community plugin for Claude Code (not made or endorsed by Anthropic). Picks the model and effort for every turn, guards a daily usage budget, and learns what is enough for your kind of work.
 
 | Prompt looks like | Runs on |
 |---|---|
@@ -89,7 +89,7 @@ budget-router does not change how subagents start and hides no agents. While a u
 
 ## Helper agents
 
-All read-only, on cheap models, with short descriptions (about 60 tokens each in every session). Claude Code offers them to the model by their own descriptions:
+On cheap models, with short descriptions (about 60 tokens each in every session). `scout` and `log-triage` have no shell; the other three use the shell to measure or run git and are instructed never to change anything. Claude Code offers them to the model by their own descriptions:
 
 | Agent | Model | For |
 |---|---|---|

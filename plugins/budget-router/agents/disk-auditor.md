@@ -1,6 +1,6 @@
 ---
 name: disk-auditor
-description: Use to measure folder and file sizes and find what fills a drive, folder by folder. Read-only. Not for deleting, moving or cleaning anything.
+description: Use to measure folder and file sizes and find what fills a drive, folder by folder. Uses the shell to measure and is instructed never to delete, move or clean anything.
 model: haiku
 effort: low
 tools: Read, Glob, Bash, PowerShell

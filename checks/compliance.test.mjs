@@ -9,7 +9,8 @@ const root = join(import.meta.dirname, '..', 'plugins', 'budget-router')
 const read = (...p) => readFileSync(join(root, ...p), 'utf8')
 const code = ['register.ts', 'policy.ts', 'smart.ts'].map(f => ({ f, text: read('hooks', f) }))
 // Comments may mention what the plugin avoids; the checks look at code only.
-const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"\\])\/\/.*$/gm, '$1')
+// Only comments that start a line, or ` // ` after code, so a regex literal holding `/*` or `//` is left alone.
+const stripComments = (s) => s.replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, (m) => m.replace(/[^\n]/g, '')).replace(/^[ \t]*\/\/.*$/gm, '').replace(/[ \t]+\/\/ .*$/gm, '')
 const register = stripComments(code[0].text)
 const hookBody = (name) => {
   const start = register.indexOf(`on('${name}'`)

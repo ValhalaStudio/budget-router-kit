@@ -78,16 +78,18 @@ function hash(s: string): number {
   return (h >>> 0) % DIM
 }
 
-/** Hashed bag of words plus a few shape features. Only the hashed weights are ever stored. */
 export type Momentum = 'none' | 'short' | 'mid' | 'long'
 
 /** How big the previous turn in this session was (assistant steps): long turns tend to follow long turns. */
 export const stepBucket = (steps: number | undefined): Momentum => (steps === undefined ? 'none' : steps >= 30 ? 'long' : steps >= 10 ? 'mid' : 'short')
 
+/**
+ * Shape features only: length band, whether there is code or a file name, context size band and the
+ * previous turn's size. No words of the prompt are used, so nothing stored is derived from its content.
+ */
 export function features(text: string, ctxTokens = 0, prev: Momentum = 'none'): number[] {
   const t = text.slice(0, 1500).toLowerCase()
   const idx = new Set<number>()
-  for (const w of t.match(/[a-z_]{3,}/g)?.slice(0, 60) ?? []) idx.add(hash(`w:${w}`))
   idx.add(hash(`len:${Math.min(6, Math.floor(Math.log2(1 + t.length / 40)))}`))
   if (/```|[{};]\s*$/m.test(text)) idx.add(hash('code'))
   if (/[\w-]+\.(ts|js|py|cpp|h|cs|json|md|ps1)\b/i.test(t)) idx.add(hash('files'))
@@ -276,7 +278,7 @@ export function pickArm(inp: PickInput): Choice {
 // -- Store ------------------------------------------------------------------------------
 
 export type SmartStore = {
-  v: 1
+  v: 2 // 2: weights come from shape features only (version 1 also hashed the prompt's words)
   weights: Weights
   cells: Record<string, Record<string, Cell>> // scope key -> arm name -> cell
   explore: { day: string; n: number }
@@ -284,7 +286,7 @@ export type SmartStore = {
   saved: number // running USD saved (or spent extra, if negative) versus the rule choice
 }
 
-export const emptyStore = (): SmartStore => ({ v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 0, saved: 0 })
+export const emptyStore = (): SmartStore => ({ v: 2, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 0, saved: 0 })
 export const MAX_SCOPES = 120
 
 export const scopeKeys = (kind: string, projectHash: string) => ({ global: 'g', kind: `k:${kind}`, project: `p:${projectHash}:${kind}` })

@@ -319,6 +319,18 @@ describe('what the mod leaves alone', () => {
     expect(await st.get('runbooks')).toBeUndefined()
   })
 
+  test('learner weights from version 1 (partly trained on hashed words) are dropped, its counts kept', async ($, on) => {
+    const old = { v: 1, weights: { 7: 1.5, 99: -2 }, cells: { g: { 'opus·high': { s: 3, f: 1, c: 0.4, n: 4, t: Date.now() } } }, explore: { day: '', n: 0 }, seen: 4, saved: 0 }
+    const st = watched(on, { smart: old })
+    kit(on)
+    await submit($, DEEP)
+    await $.turn.complete(done())
+    const s = (await st.get('smart')) as { v: number; weights: Record<string, number>; seen: number }
+    expect(s.v).toBe(2)
+    expect(s.weights['99']).toBeUndefined()
+    expect(s.seen).toBe(5)
+  })
+
   test('a spent day does not drop a prompt, and no spawn hook exists', async ($, on) => {
     mock.store(on, { ledger: { day: today(), windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() } })
     kit(on)
