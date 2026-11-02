@@ -169,7 +169,6 @@ let lastTipAt = 0
 
 /** What the learner chose for this turn, and what to record once the turn ends. */
 type Pending = { kind: string; project: string; arm: number; base: number; x: number[] }
-let decision: { pending: Pending; explored: boolean } | undefined
 let pending: Pending | undefined
 let lastOutcome: (Pending & { ok: boolean; at: number }) | undefined
 
@@ -180,12 +179,20 @@ const capSpec = (s: Spec, cap: Spec): Spec => ({
   family: rankF(s.family) > rankF(cap.family) ? cap.family : s.family,
   effort: rankE(s.effort) > rankE(cap.effort) ? cap.effort : s.effort,
 })
-const familyOf = (model: string): Family => {
-  const m = model.toLowerCase()
-  return m.includes('haiku') ? 'haiku' : m.includes('sonnet') ? 'sonnet' : 'opus'
+/** What a model id is. `above`: Fable or Mythos, ranked above Opus and never a route target. `known`: one this router can act on. */
+function parseModel(id: string): { family: Family; above: boolean; known: boolean; plain: boolean } {
+  const m = id.toLowerCase()
+  const above = /fable|mythos/.test(m)
+  return {
+    family: m.includes('haiku') ? 'haiku' : m.includes('sonnet') ? 'sonnet' : 'opus',
+    above,
+    known: above || /haiku|sonnet|opus/.test(m),
+    plain: /^claude-(haiku|sonnet|opus)-\d+(-\d{1,2})?$/.test(m),
+  }
 }
-const recognised = (model: string) => /haiku|sonnet|opus|fable|mythos/i.test(model)
-const aboveOpus = (model: string) => /fable|mythos/i.test(model) // priced and ranked above Opus; never a route target
+const familyOf = (model: string): Family => parseModel(model).family
+/** The cap that applies at a pressure level, if any. */
+const capFor = (lvl: Pressure['level']): Spec | undefined => (lvl >= 2 ? o.criticalCap : lvl === 1 ? o.warnCap : undefined)
 
 /**
  * The model id to send for a family, or nothing when unsure (the request then stays on the model Claude Code chose).
@@ -195,8 +202,9 @@ const aboveOpus = (model: string) => /fable|mythos/i.test(model) // priced and r
  */
 function targetModel(f: Family, current: string): string | undefined {
   if (learned[f]) return learned[f]
-  if (/^claude-(haiku|sonnet|opus)-\d+(-\d{1,2})?$/i.test(current)) return current.replace(/haiku|sonnet|opus/i, f)
-  return /^claude-(fable|mythos)/i.test(current) ? KNOWN_IDS[f] : undefined
+  const m = parseModel(current)
+  if (m.plain) return current.replace(/haiku|sonnet|opus/i, f)
+  return m.above && /^claude-/i.test(current) ? KNOWN_IDS[f] : undefined
 }
 
 // ---- Time ---------------------------------------------------------------------------------------
@@ -223,7 +231,7 @@ async function loadStore($: EngineInterface) {
 async function noteModel($: EngineInterface, model: string) {
   const f = familyOf(model)
   // Fable and Mythos rank above Opus but are not a tier this router routes to; never adopt one as the Opus id.
-  if (!/^claude-/.test(model) || /fable|mythos/i.test(model) || learned[f] === model) return
+  if (!/^claude-/.test(model) || parseModel(model).above || learned[f] === model) return
   const hadOlder = learned[f] !== undefined
   learned = { ...learned, [f]: model }
   if (hadOlder) {
@@ -322,7 +330,7 @@ function classify(raw: string, prev: Tier | undefined): { tier: Tier; why: strin
  * stay on the same model in a long warm conversation, the learner, skip a family whose weekly limit is
  * nearly spent, pace control, the usage caps, and no Haiku on a very long conversation.
  */
-function decide(tier: Tier, why: string, p: Pressure, x: number[], kind: string): Route {
+function decide(tier: Tier, why: string, p: Pressure, x: number[], kind: string): { route: Route; pending?: Pending; explored: boolean } {
   const notes = [why]
   let spec = pin?.spec ?? o.tiers[tier]
   const last = route
@@ -334,19 +342,19 @@ function decide(tier: Tier, why: string, p: Pressure, x: number[], kind: string)
       notes.push('sticky')
     }
   }
-  decision = undefined
+  let picked: Pending | undefined
+  let explored = false
   if (learnOn() && !pin) {
     const base = armIndex(spec)
     const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, project), w: smartData.weights, x, now: Date.now(), dailyUsedPct: p.daily, qualityWeight: QUALITY_WEIGHT, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, localDay(Date.now())), minSamples: LEARN_MIN_SAMPLES, explore: LEARN_EXPLORE })
     const live = o.learnMode === 'live'
-    decision = { pending: { kind, project, arm: live ? pick.arm : base, base, x }, explored: pick.explored && live }
-    if (pick.arm !== base) {
-      if (live) {
-        const a = ARMS[pick.arm]!
-        spec = { family: a.family, effort: a.effort }
-        notes.push(pick.why)
-      } else notes.push(`shadow: would pick ${armName(pick.arm)}`)
-    }
+    picked = { kind, project, arm: live ? pick.arm : base, base, x }
+    explored = pick.explored && live
+    if (pick.arm !== base && live) {
+      const a = ARMS[pick.arm]!
+      spec = { family: a.family, effort: a.effort }
+      notes.push(pick.why)
+    } else if (pick.arm !== base) notes.push(`shadow: would pick ${armName(pick.arm)}`)
   }
   if (!pin) {
     for (let n = 0; n < 2; n++) {
@@ -362,13 +370,13 @@ function decide(tier: Tier, why: string, p: Pressure, x: number[], kind: string)
     spec = shiftLadder(spec, shed)
     notes.push(`pace -${shed}`)
   }
-  if (p.level === 1) spec = capSpec(spec, o.warnCap)
-  if (p.level >= 2) spec = capSpec(spec, o.criticalCap)
+  const cap = capFor(p.level)
+  if (cap) spec = capSpec(spec, cap)
   if (spec.family === 'haiku' && ctxTokens > HAIKU_MAX_CONTEXT) {
     spec = { family: 'sonnet', effort: p.level >= 2 ? 'low' : spec.effort }
     notes.push('too long for haiku')
   }
-  return { ...spec, tier, why: notes.join(', ') }
+  return { route: { ...spec, tier, why: notes.join(', ') }, pending: picked, explored }
 }
 
 /** Raises effort (and after a longer run the model) for the rest of a turn whose tool calls keep failing. Caps still apply. */
@@ -381,7 +389,8 @@ function escalate(e: { turnId: string; index: number }, base: Spec): Spec {
   }
   if (!escalation) return base
   const raised = applyEscalation(base, escalation)
-  return level >= 2 ? capSpec(raised, o.criticalCap) : level === 1 ? capSpec(raised, o.warnCap) : raised
+  const cap = capFor(level)
+  return cap ? capSpec(raised, cap) : raised
 }
 
 /** After a main turn: record how it went (few failed tool calls, not aborted) and what it cost. */
@@ -525,9 +534,10 @@ export const register: Register = (on, options) => {
       const kind = kindOf(e.text)
       const x = learnOn() && !pin ? features(e.text, ctxTokens, stepBucket(lastSteps)) : []
       stepsNow = 0
-      route = decide(c.tier, c.why, p, x, kind)
-      pending = decision?.pending
-      if (decision?.explored) smartData = noteExplore(smartData, localDay(now))
+      const d = decide(c.tier, c.why, p, x, kind)
+      route = d.route
+      pending = d.pending
+      if (d.explored) smartData = noteExplore(smartData, localDay(now))
       // A contextual tip for the person (a toast, never added to the conversation), at most one every 10 minutes.
       if (o.tips && now - lastTipAt >= TIP_COOLDOWN_MS) {
         const tip = pickTip({ text: e.text, kind: kindOf(e.text), lastSteps, failedLast, level: p.level }, tipsShown)
@@ -546,10 +556,10 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     await noteModel($, e.model)
     if (e.agentId !== undefined) {
-      if (level === 0 || !recognised(e.model)) return yield* next(e)
+      let cap = capFor(level)
+      if (!cap || !parseModel(e.model).known) return yield* next(e)
       const cur: Spec = { family: familyOf(e.model), effort: typeof e.effort === 'string' ? e.effort : 'high' }
       // Capped like the main turn, but never pushed down to Haiku (a subagent's context is unknown).
-      let cap = level >= 2 ? o.criticalCap : o.warnCap
       if (cap.family === 'haiku' && cur.family !== 'haiku') cap = { family: 'sonnet', effort: 'low' }
       const s = capSpec(cur, cap)
       if (s.family === cur.family && s.effort === cur.effort) return yield* next(e)
@@ -558,10 +568,11 @@ export const register: Register = (on, options) => {
       return yield* next({ ...e, model, ...(e.effort === undefined ? {} : { effort: s.effort }) })
     }
     stepsNow++
-    const base = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
+    const base = route ?? capSpec(o.tiers.standard, capFor(level) ?? o.tiers.max)
     const spec = escalate(e, base)
     // Only act on a model it recognises, and only move to an id it can name safely.
-    const model = !recognised(e.model) ? undefined : spec.family === familyOf(e.model) && !aboveOpus(e.model) ? e.model : targetModel(spec.family, e.model)
+    const cur = parseModel(e.model)
+    const model = !cur.known ? undefined : spec.family === cur.family && !cur.above ? e.model : targetModel(spec.family, e.model)
     if (model === undefined) return yield* next(e)
     return yield* next({ ...e, model, effort: spec.effort })
   }).catch(async function* ($, e, next) {
