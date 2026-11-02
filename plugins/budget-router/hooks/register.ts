@@ -404,7 +404,7 @@ export const register: Register = (on, options) => {
     ])
     learned = (models as typeof learned | undefined) ?? {}
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
-    const p = pressureAt(readLedger(ledger), Date.now())
+    const p = pressureAt(ledger, Date.now())
     level = p.level
     showStatus($, p)
     return next(e)

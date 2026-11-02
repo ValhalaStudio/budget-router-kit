@@ -94,6 +94,21 @@ describe('ledger', () => {
     near(pressure(l, t0, '2026-11-02', opts).usedPts, oldUsed(stored)) // 2 + 4 = 6
   })
 
+  test('an older ledger whose reading dipped below its start keeps its carried points', () => {
+    const stored = { day: '2026-11-02', windowReset: reset, windowStartPct: 90, carry: 2, lastPct: 88, budgetPts: 4, fiveHourPct: 0, alerted: 0, seenAt: t0 }
+    near(pressure(readLedger(stored)!, t0, '2026-11-02', opts).usedPts, oldUsed(stored)) // 2, not 0
+    near(oldUsed(stored), 2)
+  })
+
+  test('an incomplete stored ledger is refused rather than guessed', () => {
+    const ok = { day: '2026-11-02', windowReset: reset, base: -20, lastPct: 25, budgetPts: 4, fiveHourPct: 0, alerted: 0, seenAt: t0 }
+    expect(readLedger(ok)).toBeDefined()
+    expect(readLedger({ ...ok, base: undefined })).toBeUndefined() // neither base nor the older fields
+    expect(readLedger({ ...ok, budgetPts: undefined })).toBeUndefined()
+    expect(readLedger({ ...ok, windowReset: undefined })).toBeUndefined()
+    expect(readLedger({ ...ok, lastPct: Number.NaN })).toBeUndefined()
+  })
+
   test('a current ledger is read unchanged, and rubbish is refused', () => {
     const l = absorb(undefined, week(20), t0, '2026-11-02')!
     expect(readLedger(JSON.parse(JSON.stringify(l)))).toEqual(l)

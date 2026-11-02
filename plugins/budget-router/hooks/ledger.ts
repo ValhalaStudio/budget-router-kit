@@ -23,13 +23,21 @@ export type Pressure = { daily: number; five: number; week: number; usedPts: num
 
 export type PressureOptions = { warnPercent: number; criticalPercent: number; includeFiveHour: boolean }
 
-/** A stored ledger from any version: older ones kept `windowStartPct` and `carry`, which fold into `base`. */
+/**
+ * A stored ledger from any version, or undefined when it is not usable. Older versions kept `windowStartPct` and `carry`;
+ * their spend (`carry` plus the rise since the start, never below it) becomes `base` so the figures stay the same.
+ */
 export function readLedger(raw: unknown): Ledger | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const r = raw as Partial<Ledger> & { windowStartPct?: number; carry?: number }
-  if (typeof r.day !== 'string' || typeof r.lastPct !== 'number') return undefined
-  const { windowStartPct, carry, ...rest } = r
-  const base = typeof r.base === 'number' ? r.base : (carry ?? 0) - (windowStartPct ?? 0)
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  if (typeof r.day !== 'string' || typeof r.windowReset !== 'string' || !finite(r.lastPct) || !finite(r.budgetPts) || !finite(r.alerted)) return undefined
+  let base = r.base
+  if (!finite(base)) {
+    if (!finite(r.windowStartPct) || !finite(r.carry)) return undefined
+    base = r.carry + Math.max(0, r.lastPct - r.windowStartPct) - r.lastPct
+  }
+  const { windowStartPct: _s, carry: _c, ...rest } = r
   return { ...(rest as Ledger), base }
 }
 
