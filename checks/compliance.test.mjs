@@ -1,5 +1,5 @@
-// The plugin directory's review, as checks on this plugin's own source and manifest, so a later version
-// cannot slip back. Each test names the review note it answers (see review.md); run with: node --test checks/.
+// What the plugin promises in its README, as checks on its own source and manifest, so a later
+// version cannot slip back. Run with: node --test checks/compliance.test.mjs
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -7,19 +7,26 @@ import { join } from 'node:path'
 
 const root = join(import.meta.dirname, '..', 'plugins', 'budget-router')
 const read = (...p) => readFileSync(join(root, ...p), 'utf8')
-const code = ['register.ts', 'policy.ts', 'smart.ts', 'prior.ts'].map(f => ({ f, text: read('hooks', f) }))
+const code = ['register.ts', 'policy.ts', 'smart.ts'].map(f => ({ f, text: read('hooks', f) }))
 // Comments may mention what the plugin avoids; the checks look at code only.
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"\\])\/\/.*$/gm, '$1')
+const register = stripComments(code[0].text)
+const hookBody = (name) => {
+  const start = register.indexOf(`on('${name}'`)
+  assert.ok(start >= 0, `${name} hook exists`)
+  return register.slice(start, register.indexOf('\n  })', start))
+}
 
-describe('directory review: calls the plugin must not make', () => {
+describe('calls the plugin must not make', () => {
   const banned = [
-    ['starts a program (notes 6, 7)', /\$\.process\.|\bprocess\.run\b|child_process|(^|[^.\w])(spawn|exec|execSync|spawnSync)\(/],
-    ['makes a request (notes 5, 7)', /\$\.http\.|\bfetch\(|XMLHttpRequest|WebSocket/],
-    ['calls a model of its own (notes 5, 9)', /\$\.model\./],
-    ['opens or writes a file (notes 8, 9)', /\$\.fs\.|writeFile|appendFile|readFile/],
-    ['changes settings, agents or commands (note 8)', /\$\.config\.set|\$\.agent\.(spawn|register)|\$\.command\.(register|run)\b/],
-    ['reads an environment variable or credential (note 9)', /\bprocess\.env\b|\bEnv\b\s*[.(]|\$\.env\b|credential|keychain|\.ssh|\.aws|\.npmrc|api[_-]?key\s*[:=]/i],
-    ['sets a permission mode or Remote Control (note 8)', /permissionMode|dangerously|bypassPermissions|remoteControl/i],
+    ['starts a program', /\$\.process\.|\bprocess\.run\b|child_process|(^|[^.\w])(spawn|exec|execSync|spawnSync)\(/],
+    ['makes a request', /\$\.http\.|\bfetch\(|XMLHttpRequest|WebSocket/],
+    ['calls a model of its own', /\$\.model\./],
+    ['opens or writes a file', /\$\.fs\.|writeFile|appendFile|readFile/],
+    ['registers or lists tools, commands or agents', /\$\.tool\.|\$\.command\.|\$\.agent\./],
+    ['changes settings', /\$\.config\./],
+    ['reads an environment variable or credential', /\bprocess\.env\b|\bEnv\b\s*[.(]|\$\.env\b|\$\.session\.(authorize|auth)\b|credential|keychain|\.ssh|\.aws|\.npmrc|api[_-]?key\s*[:=]/i],
+    ['sets a permission mode or Remote Control', /permissionMode|dangerously|bypassPermissions|remoteControl/i],
     ['evaluates code', /\beval\(|new Function\(/],
   ]
   for (const [what, re] of banned) {
@@ -28,48 +35,50 @@ describe('directory review: calls the plugin must not make', () => {
     })
   }
 
-  test('only the allowed hooks exist, and none of them is command.run or a permission hook (note 8)', () => {
-    const used = new Set([...stripComments(code[0].text).matchAll(/\bon\(\s*'([a-z.]+)'/g)].map(m => m[1]))
-    const allowed = ['session.start', 'prompt.context', 'session.measure', 'prompt.submit', 'turn.step', 'agent.offer', 'tool.call', 'skill.prompt', 'turn.complete']
-    assert.deepEqual([...used].filter(h => !allowed.includes(h)), [])
+  test('exactly the six hooks the README lists, none of them a policy or permission hook', () => {
+    const used = [...register.matchAll(/\bon\(\s*'([a-z.]+)'/g)].map(m => m[1]).sort()
+    assert.deepEqual(used, ['prompt.submit', 'session.measure', 'session.start', 'tool.call', 'turn.complete', 'turn.step'])
   })
 
-  test('the hooks that only listen pass the event on with next(e) (note 8)', () => {
-    const src = stripComments(code[0].text)
-    for (const name of ['agent.offer', 'skill.prompt']) {
-      const start = src.indexOf(`on('${name}'`)
-      const body = src.slice(start, src.indexOf('\n  })', start))
-      assert.ok(body.includes('return next(e)'), name + ' must return next(e)')
-    }
+  test('prompt.submit passes the prompt on exactly as received', () => {
+    const body = hookBody('prompt.submit')
+    assert.ok(body.includes('return next(e)'))
+    assert.equal([...body.matchAll(/next\(/g)].length, 1, 'one call to next, with e unchanged')
+  })
+
+  test('tool.call returns what next gives back', () => {
+    const body = hookBody('tool.call')
+    assert.ok(body.includes('const r = await next(e)') && body.includes('return r'))
+    assert.ok(!/return\s*\{/.test(body), 'never answers a call itself')
+  })
+
+  test('the other listening hooks pass the event on', () => {
+    for (const name of ['session.start', 'session.measure']) assert.ok(hookBody(name).includes('return next(e)'), name)
+    assert.ok(hookBody('turn.complete').includes('return r'))
   })
 })
 
-describe('directory review: manifest and shipped files', () => {
-  const manifest = JSON.parse(read('.claude-plugin', 'plugin.json')) 
-  test('the manifest has only fields the plugins reference knows (note 10)', () => {
+describe('manifest and shipped files', () => {
+  const manifest = JSON.parse(read('.claude-plugin', 'plugin.json'))
+  test('the manifest has only fields the plugins reference knows', () => {
     const known = ['name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'userConfig', 'commands', 'agents', 'hooks', 'mcpServers', 'icon']
     assert.deepEqual(Object.keys(manifest).filter(k => !known.includes(k)), [])
   })
-  test('no option can switch on a send (notes 5, 9)', () => {
-    assert.deepEqual(Object.keys(manifest.userConfig).filter(k => /classifier|endpoint|webhook|secret|apikey|password|^url|url$|^token$|^key$/i.test(k)), [])
+  test('no option holds a secret or switches on a send', () => {
+    assert.deepEqual(Object.keys(manifest.userConfig).filter(k => /classifier|endpoint|webhook|secret|apikey|password|token|key$|url/i.test(k)), [])
+    assert.deepEqual(Object.values(manifest.userConfig).filter(v => v.sensitive), [])
   })
-  test('the plugin ships no script to run (note 11)', () => {
-    const files = readdirSync(root, { recursive: true }).map(String)
-    assert.deepEqual(files.filter(f => /\.(sh|bat|cmd|ps1)$/i.test(f) && !f.includes('node_modules')), [])
+  test('the plugin ships no script, command, server or study file', () => {
+    const files = readdirSync(root, { recursive: true }).map(String).filter(f => !f.includes('node_modules') && !f.startsWith('.claude-plugin'))
+    assert.deepEqual(files.filter(f => /\.(sh|bat|cmd|ps1|py|mjs|js)$/i.test(f)), [])
+    assert.ok(!existsSync(join(root, 'commands')))
+    assert.ok(!existsSync(join(root, '.mcp.json')))
   })
-  test('every command is a markdown file that allows only its own tool', () => {
-    for (const n of ['budget', 'route']) {
-      const md = read('commands', `${n}.md`)
-      assert.ok(md.includes(`allowed-tools: mcp__budget-router__${n}
-`))
-      assert.ok(!/^!`|\$\(|```(bash|sh|powershell)/m.test(md))
-    }
-  })
-  test('README and PRIVACY state that nothing is sent and no program runs (notes 2, 3, 5, 6)', () => {
+  test('README and PRIVACY state that nothing is sent and no program runs', () => {
     const text = read('README.md') + read('PRIVACY.md')
     assert.match(text, /Sends: nothing/)
     assert.match(text, /Runs: no programs/)
-    assert.doesNotMatch(text, /Runbook memory\.|`\/budget vet/)
+    assert.doesNotMatch(text, /(^|[\s`(])\/(budget|route)\b|decision log of|agentHints|catalogHints|learn export/)
     assert.ok(existsSync(join(root, 'LICENSE')))
   })
 })

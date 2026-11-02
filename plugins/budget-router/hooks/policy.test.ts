@@ -1,154 +1,10 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { DEFAULT_SUBAGENT_MODELS, MAX_LOG, isOffered, parseList, parseSubagentModels, planSpawn, pushLog, summarize } from './policy'
-import type { LogEntry } from './policy'
+import { addPace, isUnrealBuildPrompt, projectExhaustion, shouldStick } from './policy'
+import { PACER_DEFAULTS, applyEscalation, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, targetPercent } from './policy'
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, learnedMove, recordOutcome, sizeBucket, sizeNudgeText, stepReadUsd, wilson } from './policy'
+import type { Learned } from './policy'
 
-// The slash commands are markdown files that call these tools; a test calls the same tools.
-// What the person typing a command does; the test engine has no bottom for prompt.submit, so its error is the end of the chain.
-const typed = async ($: any, name: string, args: string) => {
-  try {
-    await $.prompt.submit({ text: `/budget-router:${name} ${args}`, command: { name: `budget-router:${name}`, args }, origin: { kind: 'composer' } } as never)
-  } catch {
-    // nothing beneath the plugin answers prompt.submit in a test
-  }
-}
-
-const cmd = async ($: any, name: 'budget' | 'route' | 'runbook', args: string): Promise<{ text: string }> => {
-  await typed($, name, args)
-  const r = await $.tool.call({ tool: `mcp__budget-router__${name}`, args: 'ignored: the typed arguments are used', tool_use_id: `cmd-${name}` } as never)
-  if (r.deny !== undefined) throw new Error(r.deny)
-  return { text: String(r.result) }
-}
-
-test('a command typed into a running turn, or a subagent, arms nothing', async ($, on) => {
-  mock.store(on)
-  await $.prompt.submit({ text: '/budget-router:budget wipe', command: { name: 'budget-router:budget', args: 'wipe' }, origin: { kind: 'composer' }, turnId: 't1' } as never).catch(() => undefined)
-  const r = await $.tool.call({ tool: 'mcp__budget-router__budget', tool_use_id: 'y1' } as never)
-  expect(String((r as { result?: unknown }).result)).toContain('only runs when the person types it')
-  await typed($, 'budget', 'learn')
-  const sub = await $.tool.call({ tool: 'mcp__budget-router__budget', agentId: 'a1', tool_use_id: 'y2' } as never)
-  expect(String((sub as { result?: unknown }).result)).toContain('only runs when the person types it')
-})
-
-test('a command tool the model calls on its own does nothing', async ($, on) => {
-  mock.store(on)
-  const r = await $.tool.call({ tool: 'mcp__budget-router__budget', args: 'wipe', tool_use_id: 'x1' } as never)
-  expect(String((r as { result?: unknown }).result)).toContain('only runs when the person types it')
-  await typed($, 'route', 'why')
-  const wrong = await $.tool.call({ tool: 'mcp__budget-router__budget', args: 'wipe', tool_use_id: 'x2' } as never)
-  expect(String((wrong as { result?: unknown }).result)).toContain('only runs when the person types it')
-})
-
-describe('subagent model rules', () => {
-  test('the default sends read-only helper types to haiku', async () => {
-    const m = parseSubagentModels(undefined)
-    expect(m.Explore).toBe('haiku')
-    expect(m['claude-code-guide']).toBe('haiku')
-    expect(JSON.stringify(m)).toBe(DEFAULT_SUBAGENT_MODELS)
-  })
-
-  test('{} switches the rules off; bad JSON falls back to the default; unknown families are dropped', async () => {
-    expect(parseSubagentModels('{}')).toEqual({})
-    expect(parseSubagentModels('{nope')).toEqual(parseSubagentModels(undefined))
-    expect(parseSubagentModels('{"a":"HAIKU","b":"gpt","c":3}')).toEqual({ a: 'haiku' })
-    expect(parseSubagentModels('[1,2]')).toEqual(parseSubagentModels(undefined))
-  })
-
-  test('planSpawn only sets a model for plain subagents the call left unnamed', async () => {
-    const map = parseSubagentModels(undefined)
-    expect(planSpawn({ subagentType: 'Explore' }, map).model).toBe('haiku')
-    expect(planSpawn({ subagentType: 'explore' }, map).model).toBe('haiku')
-    expect(planSpawn({ subagentType: 'Explore', model: 'opus' }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'Explore', fork: true }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'Explore', resume: { agentId: 'a' } }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'Explore', isTeammate: true }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'Explore', workflow: { runId: 'wf_1', agentIndex: 1 } }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'general-purpose' }, map).model).toBeUndefined()
-    expect(planSpawn({ subagentType: 'general-purpose' }, map).note).toBe('unchanged')
-  })
-})
-
-describe('hiding agent types', () => {
-  test('hidden only from the second cap on, case-insensitively', async () => {
-    const hidden = parseList(' Plan , general-purpose,, ')
-    expect(hidden).toEqual(['Plan', 'general-purpose'])
-    expect(isOffered('Plan', 0, hidden)).toBe(true)
-    expect(isOffered('Plan', 1, hidden)).toBe(true)
-    expect(isOffered('plan', 2, hidden)).toBe(false)
-    expect(isOffered('Explore', 3, hidden)).toBe(true)
-    expect(isOffered('Plan', 3, [])).toBe(true)
-  })
-})
-
-describe('decision log', () => {
-  const turn = (t: number, sub: boolean, inp: number, cr: number, cc: number): LogEntry => ({ t, k: 'turn', sub, model: 'claude-sonnet-5-5', inp, out: 100, cr, cc, ms: 1000 })
-
-  test('keeps only the newest rows', async () => {
-    let log: LogEntry[] = []
-    for (let i = 0; i < MAX_LOG + 25; i++) log = pushLog(log, turn(i, false, 1, 1, 1))
-    expect(log.length).toBe(MAX_LOG)
-    expect(log[0]?.t).toBe(25)
-    expect(log[log.length - 1]?.t).toBe(MAX_LOG + 24)
-  })
-
-  test('/route why reports decisions, spawns and cache use', async () => {
-    const hhmm = (ms: number) => `T${ms}`
-    const log: LogEntry[] = [
-      { t: 1000, k: 'prompt', tier: 'deep', why: 'classifier', model: 'opus', effort: 'high', level: 0, ctx: 12000 },
-      { t: 1100, k: 'spawn', type: 'Explore', note: 'Explore -> haiku', level: 0 },
-      turn(1200, false, 1000, 8000, 1000),
-      turn(1300, true, 500, 0, 500),
-      turn(10, false, 9999, 0, 0),
-    ]
-    const text = summarize(log, 1000, hhmm)
-    expect(text).toContain('T1000 deep')
-    expect(text).toContain('-> opus·high')
-    expect(text).toContain('T1100 Explore: Explore -> haiku')
-    expect(text).toContain('main     : 1 turns')
-    expect(text).toContain('80% of input from cache')
-    expect(text).toContain('subagents: 1 turns')
-    expect(text).not.toContain('9999')
-  })
-
-  test('says so when nothing was routed yet', async () => {
-    expect(summarize([], 0, String)).toContain('no routed prompts yet')
-  })
-})
-
-// --- engine-level tests: the hooks as the engine raises them -------------------------------
-
-const core = { plugin: 'engine', tier: 'core' }
-const spawn = (subagentType: string, extra: Record<string, unknown> = {}) =>
-  ({ tool_use_id: 't1', prompt: 'look around', description: 'look', subagentType, provider: core, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra }) as never
-
-describe('turn.complete hook', () => {
-  const usage = (inp: number, cr: number, cc: number) => ({ model: 'claude-sonnet-5-5', input_tokens: inp, output_tokens: 50, cache_read_input_tokens: cr, cache_creation_input_tokens: cc })
-  const done = (extra: Record<string, unknown>) => ({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'turn-1', reason: 'answer', ...extra }) as never
-
-  test('token use of main and subagent turns lands in /route why', async ($, on) => {
-    mock.store(on)
-    on('turn.complete', async (_$, e) => ({ text: e.answer, usage: e.usage }))
-    await $.turn.complete(done({ usage: usage(1000, 8000, 1000) }))
-    await $.turn.complete(done({ agentId: 'agent-1', usage: usage(500, 0, 500) }))
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('main     : 1 turns')
-    expect(why.text).toContain('subagents: 1 turns')
-    expect(why.text).toContain('80% of input from cache')
-    expect(why.text).toContain('sonnet-5-5')
-  })
-
-  test('with logging off nothing is stored', { options: { logDecisions: false } }, async ($, on) => {
-    mock.store(on)
-    on('turn.complete', async (_$, e) => ({ text: e.answer, usage: e.usage }))
-    await $.turn.complete(done({ usage: usage(1000, 8000, 1000) }))
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('no routed prompts yet')
-    expect(why.text).not.toContain('tokens today')
-  })
-})
-
-// --- v0.4 ----------------------------------------------------------------------------------
-
-import { addPace, auditCommands, roughSize, helperHint, isUnrealBuildPrompt, projectExhaustion, shouldStick } from './policy'
+// --- pure helpers --------------------------------------------------------------------------
 
 describe('unreal build text', () => {
   test('recognises build, link and cook failures, not ordinary talk', async () => {
@@ -158,19 +14,6 @@ describe('unreal build text', () => {
     for (const t of ['hello', 'rename this variable', 'write a README', 'the build looks fine']) expect(isUnrealBuildPrompt(t)).toBe(false)
   })
 
-})
-
-describe('helper agent hints', () => {
-  test('each helper is suggested for its kind of prompt, one at a time', async () => {
-    expect(helperHint('the build failed, see Saved/Logs/Foo.log')?.agent).toBe('log-triage')
-    expect(helperHint('what is using the space on my C drive?')?.agent).toBe('disk-auditor')
-    expect(helperHint('is it safe to delete this repo, any unpushed work?')?.agent).toBe('repo-check')
-    expect(helperHint('please do a code review of my branch')?.agent).toBe('reviewer')
-    expect(helperHint('where is the damage calculated? which files use it')?.agent).toBe('scout')
-    expect(helperHint('rename the function to foo')).toBeUndefined()
-    expect(helperHint('LNK2019 on the repo, any unpushed worktrees?')?.agent).toBe('log-triage')
-    expect(helperHint('where is x')?.text).toContain('budget-router:scout')
-  })
 })
 
 describe('cache-aware switching', () => {
@@ -206,25 +49,6 @@ describe('pace forecast', () => {
     expect(calm?.at).toBeUndefined()
   })
 })
-
-describe('skill list audit', () => {
-  test('counts own entries, leaves built-ins out and names the longest', async () => {
-    const text = auditCommands([
-      { name: 'help', description: 'x'.repeat(500), source: 'builtin' },
-      { name: 'big', description: 'y'.repeat(400), source: 'plugin', plugin: 'foo' },
-      { name: 'small', description: 'short', source: 'user' },
-    ])
-    expect(text).toContain('2 entries')
-    expect(text).toContain('big (foo): 400 chars')
-    expect(text).not.toContain('help (')
-    expect(roughSize(400)).toBe(100)
-  })
-})
-
-// --- v0.5 ----------------------------------------------------------------------------------
-
-import { PACER_DEFAULTS, applyEscalation, buildIndex, escalationFor, ladderIndex, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent, tokenize } from './policy'
-import type { CatalogItem } from './policy'
 
 describe('pace target and PID pacer', () => {
   test('the even-pace line runs from the start hour to the end hour', async () => {
@@ -300,185 +124,6 @@ describe('escalation when a turn goes badly', () => {
     expect(applyEscalation({ family: 'opus', effort: 'high' }, { effortUp: true, modelUp: true })).toEqual({ family: 'opus', effort: 'high' })
   })
 })
-
-describe('suggesting installed skills and agents', () => {
-  const items: CatalogItem[] = [
-    { kind: 'skill', name: 'pdf', description: 'Use this skill whenever the user wants to do anything with PDF files: reading, merging, splitting, rotating, watermarks, forms, OCR on scanned documents', source: 'plugin', plugin: 'anthropic-skills' },
-    { kind: 'skill', name: 'docx', description: 'Create, read and edit Word documents (.docx): tracked changes, comments, templates, headings and tables of contents', source: 'plugin', plugin: 'anthropic-skills' },
-    { kind: 'skill', name: 'xlsx', description: 'Spreadsheet work: open, edit and fix workbooks, formulas, formatting, charts, csv and tsv cleaning', source: 'plugin', plugin: 'anthropic-skills' },
-    { kind: 'skill', name: 'loop', description: 'Run a prompt or slash command on a recurring interval', source: 'plugin' },
-    { kind: 'agent', name: 'security-auditor', description: 'Reviews code for vulnerabilities, injection, leaked secrets and authentication problems', source: 'plugin' },
-    { kind: 'skill', name: 'frontend-design', description: 'Build distinctive production interfaces: components, pages, layouts and styling in CSS', source: 'plugin' },
-  ]
-  const idx = buildIndex(items)
-
-  test('stems plurals and drops filler words', async () => {
-    expect(tokenize('Please MERGE these PDF files and rotate pages')).toEqual(['merge', 'pdf', 'rotate', 'page'])
-  })
-
-  test('picks the one item that clearly fits', async () => {
-    expect(suggestFrom('I need merging and splitting for a pdf, and rotating pages', idx)?.item.name).toBe('pdf')
-    expect(suggestFrom('add a formula column to the spreadsheet and chart the workbook', idx)?.item.name).toBe('xlsx')
-    expect(suggestFrom('review this code for injection vulnerabilities and leaked secrets', idx)?.item.name).toBe('security-auditor')
-  })
-
-  test('says nothing for ordinary prompts or a single weak match', async () => {
-    expect(suggestFrom('rename the variable and fix the typo', idx)).toBeUndefined()
-    expect(suggestFrom('check the pdf', idx)).toBeUndefined()
-    expect(suggestFrom('', idx)).toBeUndefined()
-    expect(suggestFrom('merging and splitting a pdf', buildIndex([]))).toBeUndefined()
-  })
-
-  test('says nothing when two items fit about equally', async () => {
-    const twin = buildIndex([
-      { kind: 'skill', name: 'pdf-a', description: 'Merging splitting rotating pdf documents', source: 'plugin' },
-      { kind: 'skill', name: 'pdf-b', description: 'Merging splitting rotating pdf documents', source: 'plugin' },
-    ])
-    expect(suggestFrom('merging and splitting pdf documents', twin)).toBeUndefined()
-  })
-})
-
-describe('log summary, v0.5 rows', () => {
-  test('shows escalations and counts a skill use as following a hint', async () => {
-    const log: LogEntry[] = [
-      { t: 1000, k: 'hint', agent: 'pdf' },
-      { t: 1500, k: 'skill', name: 'anthropic-skills:pdf' },
-      { t: 2000, k: 'hint', agent: 'xlsx' },
-      { t: 3000, k: 'escalate', from: 'sonnet·low', to: 'sonnet·medium', errors: 3 },
-    ]
-    const text = summarize(log, 0, n => `T${n}`)
-    expect(text).toContain('pdf: 1 given, 1 followed')
-    expect(text).toContain('xlsx: 1 given, 0 followed')
-    expect(text).toContain('T3000 sonnet·low -> sonnet·medium after 3 failed tool calls')
-  })
-})
-
-describe('v0.5 hooks in the engine', () => {
-  const rateLimits = [
-    { kind: 'seven_day', percentUsed: 30, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
-    { kind: 'five_hour', percentUsed: 5, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
-  ]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const quiet = (on: any, toasts: string[] = []) => {
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async (_$: unknown, e: { text: string }) => {
-      toasts.push(e.text)
-      return { value: undefined } as never
-    })
-    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
-  }
-
-  test('spending ahead of the even-pace line lowers the next route by up to two steps', { options: { paceSlack: -200 } }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('-> sonnet·low')
-    expect(why.text).toContain('pace -2')
-    const budget = await cmd($, 'budget', '')
-    expect(budget.text).toContain('pace control: shedding 2 cost step(s)')
-  })
-
-  test('with pace control off the route is untouched', { options: { paceSlack: -200, paceControl: false } }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('-> opus·high')
-    expect(why.text).not.toContain('pace -')
-  })
-
-  test('an installed agent that clearly fits is named to the person, never to the model, and logged', { options: {} }, async ($, on) => {
-    const toasts: string[] = []
-    mock.store(on)
-    quiet(on, toasts)
-    on('agent.offer', async () => ({ isOffered: true }))
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
-    await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
-    await $.agent.offer({ agent: 'Explore', description: 'Fast read-only search agent', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } } as never)
-    const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
-    expect(toasts.join('\n')).toContain('pdf-wizard')
-    expect((r.context ?? []).join('\n')).not.toContain('pdf-wizard')
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('pdf-wizard: 1 given')
-  })
-
-  test('catalog suggestions can be switched off', { options: { catalogHints: false } }, async ($, on) => {
-    const toasts: string[] = []
-    mock.store(on)
-    quiet(on, toasts)
-    on('agent.offer', async () => ({ isOffered: true }))
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
-    await $.agent.offer({ agent: 'pdf-wizard', description: 'Reads, merges, splits and rotates PDF files and extracts text from scanned documents', source: 'plugin', provider: { plugin: 'x', tier: 'user' } } as never)
-    const r = await $.prompt.submit({ text: 'I need to merge and split a pdf, then rotate its pages', origin: { kind: 'composer' } } as never)
-    expect((r.context ?? []).length).toBe(0)
-    expect(toasts.join('\n')).not.toContain('pdf-wizard')
-  })
-})
-
-describe('escalation inside turn.step', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const quiet = (on: any) => {
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async () => ({ value: undefined }) as never)
-  }
-  async function step($: any, on: any, errors: number, index = 3) { // eslint-disable-line @typescript-eslint/no-explicit-any
-    on('tool.call', async () => ({ ref: 'r', result: 'boom', text: 'boom', isError: true }) as never)
-    const seen: Array<{ model: string; effort: unknown }> = []
-    on('turn.step', async function* (_$: unknown, e: { model: string; effort?: unknown; turnId: string; index: number }) {
-      seen.push({ model: e.model, effort: e.effort })
-      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
-    })
-    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
-    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as never) // trivial: haiku · low
-    for (let k = 0; k < errors; k++) await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: `t${k}` } as never)
-    const stream = $.turn.step({ turnId: 'turn-1', index, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 8 } as never)
-    for await (const _chunk of stream) { /* drain */ }
-    return seen[0]
-  }
-
-  test('three failed tool calls raise effort one notch, the model stays', { options: {} }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    const seen = await step($, on, 3)
-    expect(seen?.effort).toBe('medium')
-    expect(String(seen?.model)).toContain('haiku')
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('haiku·low -> haiku·medium after 3 failed tool calls')
-  })
-
-  test('six failed tool calls also raise the model one step', { options: {} }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    const seen = await step($, on, 6)
-    expect(seen?.effort).toBe('medium')
-    expect(String(seen?.model)).toContain('sonnet')
-  })
-
-  test('two failures change nothing, and escalation can be switched off', { options: {} }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    const seen = await step($, on, 2)
-    expect(seen?.effort).toBe('low')
-  })
-
-  test('off means off', { options: { escalateOnTrouble: false } }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    const seen = await step($, on, 9)
-    expect(seen?.effort).toBe('low')
-    expect(String(seen?.model)).toContain('haiku')
-  })
-})
-
-// --- v0.6 ----------------------------------------------------------------------------------
-
-import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, learnedMove, recordOutcome, sizeBucket, sizeNudgeText, stepReadUsd, wilson } from './policy'
-import type { Learned } from './policy'
 
 // Test values that look private are assembled here so no file holds one whole.
 const fake = (...parts: string[]) => parts.join('')
@@ -558,183 +203,308 @@ describe('learner', () => {
   })
 })
 
-describe('v0.6 hooks in the engine', () => {
+describe('escalation inside turn.step', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const quiet = (on: any, toasts: string[] = []) => {
+  const quiet = (on: any) => {
     on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async (_$: unknown, e: { text: string }) => {
-      toasts.push(e.text)
-      return { value: undefined } as never
-    })
-    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
-    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
-    on('turn.complete', async () => ({ text: '' }) as never)
+    on('ui.toast', async () => ({ value: undefined }) as never)
   }
-  const done = (answer = 'done') => ({ turnId: 't1', answer, durationMs: 10, isAborted: false, reason: 'answer' }) as never
+  async function step($: any, on: any, errors: number, index = 3) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    on('tool.call', async () => ({ ref: 'r', result: 'boom', text: 'boom', isError: true }) as never)
+    const seen: Array<{ model: string; effort: unknown }> = []
+    on('turn.step', async function* (_$: unknown, e: { model: string; effort?: unknown; turnId: string; index: number }) {
+      seen.push({ model: e.model, effort: e.effort })
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+    })
+    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as never) // trivial: haiku · low
+    for (let k = 0; k < errors; k++) await $.tool.call({ tool: 'Bash', command: 'false', tool_use_id: `t${k}` } as never)
+    const stream = $.turn.step({ turnId: 'turn-1', index, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 8 } as never)
+    for await (const _chunk of stream) { /* drain */ }
+    return seen[0]
+  }
 
-  const ok = async () => ({ ref: 'r', result: '', text: 'ok' }) as never
-  test('a long pause with a big context gets a notice with the cost, and is logged', { options: { cacheWarmMinutes: -1, idleMinContext: 1 } }, async ($, on) => {
-    const toasts: string[] = []
+  test('three failed tool calls raise effort one notch, the model stays', { options: {} }, async ($, on) => {
     mock.store(on)
-    quiet(on, toasts)
-    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
-    await $.turn.complete(done())
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    expect(toasts.some(t => t.includes('re-writes about 300k'))).toBe(true)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('idle cache rebuilds warned today: 1')
+    quiet(on)
+    const seen = await step($, on, 3)
+    expect(seen?.effort).toBe('medium')
+    expect(String(seen?.model)).toContain('haiku')
   })
 
-  test('a spent day does not drop a prompt, and no spawn hook exists', { options: {} }, async ($, on) => {
-    const day = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-    mock.store(on, { ledger: { day, windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() } })
+  test('six failed tool calls also raise the model one step', { options: {} }, async ($, on) => {
+    mock.store(on)
     quiet(on)
+    const seen = await step($, on, 6)
+    expect(seen?.effort).toBe('medium')
+    expect(String(seen?.model)).toContain('sonnet')
+  })
+
+  test('two failures change nothing, and escalation can be switched off', { options: {} }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, 2)
+    expect(seen?.effort).toBe('low')
+  })
+
+  test('off means off', { options: { escalateOnTrouble: false } }, async ($, on) => {
+    mock.store(on)
+    quiet(on)
+    const seen = await step($, on, 9)
+    expect(seen?.effort).toBe('low')
+    expect(String(seen?.model)).toContain('haiku')
+  })
+})
+
+// --- the hooks as the engine raises them ---------------------------------------------------
+// With no commands, a test reads what the plugin decided where a person sees it (the status
+// line and notices) or what it stored.
+
+const core = { plugin: 'engine', tier: 'core' }
+const spawn = (subagentType: string, extra: Record<string, unknown> = {}) =>
+  ({ tool_use_id: 't1', prompt: 'look around', description: 'look', subagentType, provider: core, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra }) as never
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+const DEEP = 'refactor the architecture of this module'
+const done = (extra: Record<string, unknown> = {}) => ({ turnId: 't1', answer: 'done', durationMs: 10, isAborted: false, reason: 'answer', ...extra }) as never
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const kit = (on: any, seen: { status?: string[]; toasts?: string[] } = {}) => {
+  on('ui.status', async (_$: unknown, e: { text?: string }) => {
+    seen.status?.push(e.text ?? '')
+    return { value: undefined } as never
+  })
+  on('ui.toast', async (_$: unknown, e: { text: string }) => {
+    seen.toasts?.push(e.text)
+    return { value: undefined } as never
+  })
+  on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
+  on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
+  on('turn.complete', async () => ({ text: '' }) as never)
+}
+const last = (rows: readonly string[]) => rows[rows.length - 1] ?? ''
+const submit = ($: any, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never) // eslint-disable-line @typescript-eslint/no-explicit-any
+
+// The test engine has no $.store, so these tests keep the plugin's store in a map they can read.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const watched = (on: any, entries: Record<string, unknown> = {}) => {
+  const m = new Map<string, unknown>(Object.entries(entries))
+  on('store.get', async (_$: unknown, e: { key: string }) => ({ value: m.get(e.key) }) as never)
+  on('store.set', async (_$: unknown, e: { key: string; value: unknown }) => {
+    m.set(e.key, structuredClone(e.value))
+    return { value: undefined } as never
+  })
+  on('store.delete', async (_$: unknown, e: { key: string }) => {
+    m.delete(e.key)
+    return { value: undefined } as never
+  })
+  on('store.keys', async () => ({ value: [...m.keys()] }) as never)
+  return { get: async (key: string) => m.get(key) }
+}
+
+describe('what the mod leaves alone', () => {
+  test('the prompt is passed on exactly as typed, with nothing added', async ($, on) => {
+    mock.store(on)
+    kit(on)
+    const r = await submit($, 'where is the damage calculated? which files use it')
+    expect(r.text).toBe('where is the damage calculated? which files use it')
+    expect(r.context).toBeUndefined()
+  })
+
+  test('data older versions kept is deleted', async ($, on) => {
+    const st = watched(on, { decisions: [{ t: 1, k: 'hint', agent: 'scout' }], cmdstats: { k: { n: 5 } }, runbooks: { a: 1 } })
+    kit(on)
+    await submit($, 'hello')
+    expect(await st.get('decisions')).toBeUndefined()
+    expect(await st.get('cmdstats')).toBeUndefined()
+    expect(await st.get('runbooks')).toBeUndefined()
+  })
+
+  test('a spent day does not drop a prompt, and no spawn hook exists', async ($, on) => {
+    mock.store(on, { ledger: { day: today(), windowReset: new Date(Date.now() + 3 * 86_400_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 40, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() } })
+    kit(on)
     on('agent.spawn', async () => ({ model: 'inherit', agentId: 'a1' }))
-    const r = await $.prompt.submit({ text: 'rename this variable', origin: { kind: 'composer' } } as never)
+    const r = await submit($, 'rename this variable')
     expect((r as { drop?: string }).drop).toBeUndefined()
     const a = await $.agent.spawn(spawn('Explore'))
     expect(a.deny).toBeUndefined()
     expect(a.model).toBe('inherit')
   })
+})
 
-  test('a step with a poor record here is moved up one', { options: { learnMode: 'classic', paceControl: false } }, async ($, on) => {
-    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
-    quiet(on)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('-> opus·xhigh')
-    expect(why.text).toContain('learned: ')
+describe('the pin option', () => {
+  test('a model pin holds whatever the prompt asks', { options: { pin: 'haiku' } }, async ($, on) => {
+    const status: string[] = []
+    mock.store(on)
+    kit(on, { status })
+    await submit($, DEEP)
+    expect(last(status)).toContain('haiku·high (standard, pinned)')
   })
 
-  test('finished turns are recorded and shown, a redo counts against the last one', { options: { learnMode: 'classic', paceControl: false, reflect: false } }, async ($, on) => {
+  test('a tier pin uses that tier', { options: { pin: 'light' } }, async ($, on) => {
+    const status: string[] = []
     mock.store(on)
-    quiet(on)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+    kit(on, { status })
+    await submit($, DEEP)
+    expect(last(status)).toContain('sonnet·low (light, pinned)')
+  })
+
+  test('model:effort', { options: { pin: 'opus:medium' } }, async ($, on) => {
+    const status: string[] = []
+    mock.store(on)
+    kit(on, { status })
+    await submit($, 'hi')
+    expect(last(status)).toContain('opus·medium')
+  })
+
+  test('blank, auto or nonsense routes automatically', { options: { pin: 'gpt-9' } }, async ($, on) => {
+    const status: string[] = []
+    mock.store(on)
+    kit(on, { status })
+    await submit($, DEEP)
+    expect(last(status)).toContain('opus·high (deep)')
+  })
+})
+
+describe('pace control', () => {
+  const rateLimits = [
+    { kind: 'seven_day', percentUsed: 30, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
+    { kind: 'five_hour', percentUsed: 5, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+  ]
+
+  test('spending ahead of the even-pace line lowers the next route by up to two steps', { options: { paceSlack: -200 } }, async ($, on) => {
+    const status: string[] = []
+    const st = watched(on)
+    kit(on, { status })
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await submit($, DEEP)
+    expect(last(status)).toContain('sonnet·low')
+    expect(((await st.get('pacer')) as { u: number }).u).toBe(2)
+  })
+
+  test('with pace control off the route is untouched', { options: { paceSlack: -200, paceControl: false } }, async ($, on) => {
+    const status: string[] = []
+    mock.store(on)
+    kit(on, { status })
+    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
+    await submit($, DEEP)
+    expect(last(status)).toContain('opus·high')
+  })
+})
+
+describe('notices', () => {
+  test('a long pause with a big context gets a notice with the cost', { options: { cacheWarmMinutes: -1, idleMinContext: 1 } }, async ($, on) => {
+    const toasts: string[] = []
+    mock.store(on)
+    kit(on, { toasts })
+    on('session.usage', async () => ({ value: { context: { tokens: 300_000, window: 1_000_000 } } }) as never)
     await $.turn.complete(done())
-    let report = await cmd($, 'budget', '')
-    expect(report.text).toContain('deep|code: opus·high 100% of 1')
-    await $.prompt.submit({ text: 'no, that is wrong, try again', origin: { kind: 'composer' } } as never)
-    report = await cmd($, 'budget', '')
-    expect(report.text).toContain('deep|code: opus·high 0% of 1')
+    await submit($, DEEP)
+    expect(toasts.some(t => t.includes('re-writes about 300k'))).toBe(true)
+  })
+})
+
+describe('learning in the engine', () => {
+  test('a step with a poor record here is moved up one', { options: { learnMode: 'classic', paceControl: false } }, async ($, on) => {
+    const status: string[] = []
+    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
+    kit(on, { status })
+    await submit($, DEEP)
+    expect(last(status)).toContain('opus·xhigh')
   })
 
-  test('the smart learner records a turn with its cost, a redo flips it, reset clears it', { options: { paceControl: false, reflect: false } }, async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    await $.turn.complete({ ...(done() as object), usage: { model: 'claude-opus-4-1', input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never)
-    let r = await cmd($, 'budget', 'learn')
-    expect(r.text).toContain('1 turns seen')
-    expect(r.text).toContain('opus·high 100% of 1')
-    await $.prompt.submit({ text: 'no, that is wrong, try again', origin: { kind: 'composer' } } as never)
-    r = await cmd($, 'budget', 'learn')
-    expect(r.text).toContain('opus·high 0% of 1')
-    r = await cmd($, 'budget', 'learn reset')
-    expect(r.text).toContain('cleared')
-    r = await cmd($, 'budget', 'learn')
-    expect(r.text).toContain('0 turns seen')
+  test('finished turns are recorded, a redo counts against the last one', { options: { learnMode: 'classic', paceControl: false } }, async ($, on) => {
+    const st = watched(on)
+    kit(on)
+    await submit($, DEEP)
+    await $.turn.complete(done())
+    const cell = async () => ((await st.get('bandit')) as Learned)['deep|code']?.['4']
+    expect(await cell()).toEqual({ s: 1, f: 0 })
+    await submit($, 'no, that is wrong, try again')
+    expect(await cell()).toEqual({ s: 0, f: 1 })
+  })
+
+  test('the smart learner records a turn with its cost, and a redo flips it', { options: { paceControl: false } }, async ($, on) => {
+    const st = watched(on)
+    kit(on)
+    await submit($, DEEP)
+    await $.turn.complete(done({ usage: { model: 'claude-opus-4-1', input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }))
+    type Store = { seen: number; cells: Record<string, Record<string, { s: number; f: number; c: number }>> }
+    let s = (await st.get('smart')) as Store
+    expect(s.seen).toBe(1)
+    expect(s.cells.g?.['opus·high']?.s).toBeGreaterThan(0.5)
+    expect(s.cells.g?.['opus·high']?.c).toBeGreaterThan(0)
+    await submit($, 'no, that is wrong, try again')
+    s = (await st.get('smart')) as Store
+    expect(s.cells.g?.['opus·high']?.f).toBeGreaterThan(0.5)
   })
 
   test('shadow mode never changes the route', { options: { paceControl: false, learnMode: 'shadow', learnExplore: 1 } }, async ($, on) => {
+    const status: string[] = []
     mock.store(on)
-    quiet(on)
+    kit(on, { status })
     for (let k = 0; k < 6; k++) {
-      await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
+      await submit($, DEEP)
       await $.turn.complete(done())
     }
-    const why = await cmd($, 'route', 'why')
-    expect(why.text.includes('-> opus·medium')).toBe(false)
-    expect(why.text).toContain('-> opus·high')
+    expect(status.some(t => t.includes('opus·medium'))).toBe(false)
+    expect(last(status)).toContain('opus·high')
   })
 
   test('the learner can be switched off', { options: { learn: false } }, async ($, on) => {
+    const status: string[] = []
     mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } } })
-    quiet(on)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('-> opus·high')
-    const report = await cmd($, 'budget', '')
-    expect(report.text).toContain('learner: off')
+    kit(on, { status })
+    await submit($, DEEP)
+    expect(last(status)).toContain('opus·high')
   })
 })
-
-describe('wipe', () => {
-  test('/budget wipe deletes what the plugin stored', { options: { learnMode: 'classic', paceControl: false, reflect: false } }, async ($, on) => {
-    mock.store(on, { bandit: { 'deep|code': { '4': { s: 1, f: 11 } } }, cmdstats: { k: { n: 5, last: 1, tool: 'Bash', sample: 'x' } } })
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async () => ({ value: undefined }) as never)
-    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
-    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    let report = await cmd($, 'budget', '')
-    expect(report.text).toContain('deep|code: opus·high')
-    const wiped = await cmd($, 'budget', 'wipe')
-    expect(wiped.text).toContain('deleted')
-    report = await cmd($, 'budget', '')
-    expect(report.text).not.toContain('deep|code')
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('no routed prompts yet')
-  })
-})
-
-// --- budget window edges ------------------------------------------------------------------
 
 describe('daily budget at the edges of the weekly window', () => {
-  const day = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const quiet = (on: any) => {
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async () => ({ value: undefined }) as never)
-    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
-  }
+  const ledger = async (st: { get: (k: string) => Promise<unknown> }) => (await st.get('ledger')) as { budgetPts: number }
+  const measure = ($: any, percentUsed: number, resetsInMs: number) => // eslint-disable-line @typescript-eslint/no-explicit-any
+    $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits: [{ kind: 'seven_day', percentUsed, resetsAt: new Date(Date.now() + resetsInMs).toISOString() }], changed: ['rateLimits'] } as never)
 
   test('on the last day the whole remainder of the week is today\'s budget', async ($, on) => {
-    mock.store(on)
-    quiet(on)
-    const rateLimits = [{ kind: 'seven_day', percentUsed: 60, resetsAt: new Date(Date.now() + 10 * 3_600_000).toISOString() }]
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    const r = await cmd($, 'budget', '')
-    expect(r.text).toContain('of 40.0 weekly points')
+    const status: string[] = []
+    const st = watched(on)
+    kit(on, { status })
+    await measure($, 60, 10 * 3_600_000)
+    expect((await ledger(st)).budgetPts).toBe(40)
+    expect(last(status)).toContain('day 0%')
   })
 
   test('a weekly reset in the middle of the day keeps what was spent and grants at least an even share', async ($, on) => {
-    const prev = { day: day(), windowReset: new Date(Date.now() - 3_600_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 0, seenAt: Date.now() - 60_000 }
-    mock.store(on, { ledger: prev })
-    quiet(on)
-    const rateLimits = [{ kind: 'seven_day', percentUsed: 2, resetsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() }]
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    const r = await cmd($, 'budget', '')
-    expect(r.text).toContain('42.0 of 14.3 weekly points')
+    const status: string[] = []
+    const st = watched(on, { ledger: { day: today(), windowReset: new Date(Date.now() - 3_600_000).toISOString(), windowStartPct: 10, carry: 0, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 0, seenAt: Date.now() - 60_000 } })
+    kit(on, { status })
+    await measure($, 2, 7 * 86_400_000)
+    expect(Math.round((await ledger(st)).budgetPts * 10) / 10).toBe(14.3)
+    expect(last(status)).toContain('day 294%')
   })
 
   test('a new day starts from the first reading, not from yesterday\'s spend', async ($, on) => {
-    const prev = { day: '2000-01-01', windowReset: new Date(Date.now() + 2 * 86_400_000).toISOString(), windowStartPct: 10, carry: 5, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() - 86_400_000 }
-    mock.store(on, { ledger: prev })
-    quiet(on)
-    const rateLimits = [{ kind: 'seven_day', percentUsed: 50, resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }]
-    await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    const r = await cmd($, 'budget', '')
-    expect(r.text).toContain('0.0 of 25.0 weekly points')
+    const status: string[] = []
+    const st = watched(on, { ledger: { day: '2000-01-01', windowReset: new Date(Date.now() + 2 * 86_400_000).toISOString(), windowStartPct: 10, carry: 5, lastPct: 50, budgetPts: 10, fiveHourPct: 0, alerted: 3, seenAt: Date.now() - 86_400_000 } })
+    kit(on, { status })
+    await measure($, 50, 2 * 86_400_000)
+    expect((await ledger(st)).budgetPts).toBe(25)
+    expect(last(status)).toContain('day 0%')
   })
 })
 
 describe('per-model weekly limits', () => {
   test('a nearly spent Opus weekly limit routes a deep prompt to Sonnet', { options: { paceControl: false } }, async ($, on) => {
+    const status: string[] = []
     mock.store(on)
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async () => ({ value: undefined }) as never)
-    on('session.measure', async () => ({ changed: ['rateLimits'] }) as never)
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+    kit(on, { status })
     const reset = new Date(Date.now() + 3 * 86_400_000).toISOString()
     const rateLimits = [
       { kind: 'seven_day', percentUsed: 20, resetsAt: reset },
       { kind: 'seven_day_opus', percentUsed: 95, resetsAt: reset },
     ]
     await $.session.measure({ context: { tokens: 1000, window: 200000 }, rateLimits, changed: ['rateLimits'] } as never)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    const why = await cmd($, 'route', 'why')
-    expect(why.text).toContain('-> sonnet·high')
-    expect(why.text).toContain('opus weekly 95% used')
+    await submit($, DEEP)
+    expect(last(status)).toContain('sonnet·high')
   })
 })
 
@@ -775,53 +545,5 @@ describe('wrap-up notice', () => {
     expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
     await measure(19.8)
     expect(toasts.filter(t => t.includes('Good moment to finish')).length).toBe(1)
-  })
-})
-
-describe('learner export and context line', () => {
-  test('/budget learn export gives a shareable summary without prompt text', { options: { paceControl: false } }, async ($, on) => {
-    mock.store(on)
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
-    on('turn.complete', async () => ({ text: '' }) as never)
-    await $.prompt.submit({ text: 'my secret project plan for acme', origin: { kind: 'composer' } } as never)
-    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
-    const r = await cmd($, 'budget', 'learn export')
-    expect(r.text).toContain('budget-router-contribution/1')
-    expect(r.text.includes('acme')).toBe(false)
-    expect(r.text).toContain('nothing is sent anywhere')
-  })
-})
-
-describe('one-time invitation to share counts', () => {
-  test('shown once after enough turns, and not when switched off', { options: { paceControl: false } }, async ($, on) => {
-    const toasts: string[] = []
-    mock.store(on, { smart: { v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 59, saved: 0 } })
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async (_$: unknown, e: { text: string }) => {
-      toasts.push(e.text)
-      return { value: undefined } as never
-    })
-    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
-    on('turn.complete', async () => ({ text: '' }) as never)
-    for (let k = 0; k < 4; k++) {
-      await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-      await $.turn.complete({ turnId: `t${k}`, answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
-    }
-    expect(toasts.filter(t => t.includes('/budget learn export')).length).toBe(1)
-  })
-  test('the option turns it off', { options: { paceControl: false, inviteContribution: false } }, async ($, on) => {
-    const toasts: string[] = []
-    mock.store(on, { smart: { v: 1, weights: {}, cells: {}, explore: { day: '', n: 0 }, seen: 80, saved: 0 } })
-    on('ui.status', async () => ({ value: undefined }) as never)
-    on('ui.toast', async (_$: unknown, e: { text: string }) => {
-      toasts.push(e.text)
-      return { value: undefined } as never
-    })
-    on('prompt.submit', async (_$: unknown, e: { text: string; context?: unknown }) => ({ text: e.text, context: e.context }) as never)
-    on('turn.complete', async () => ({ text: '' }) as never)
-    await $.prompt.submit({ text: 'refactor the architecture of this module', origin: { kind: 'composer' } } as never)
-    await $.turn.complete({ turnId: 't', answer: 'done', durationMs: 10, isAborted: false, reason: 'answer' } as never)
-    expect(toasts.some(t => t.includes('/budget learn export'))).toBe(false)
   })
 })

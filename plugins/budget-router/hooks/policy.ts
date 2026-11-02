@@ -3,189 +3,14 @@
 export type Family = 'haiku' | 'sonnet' | 'opus'
 export const FAMILIES: readonly Family[] = ['haiku', 'sonnet', 'opus']
 
-// Subagent types that only read and summarise run on Haiku unless the call names a model.
-export const DEFAULT_SUBAGENT_MODELS = '{"Explore":"haiku","claude-code-guide":"haiku","statusline-setup":"haiku"}'
-
-function toMap(raw: string): Record<string, Family> | undefined {
-  try {
-    const obj: unknown = JSON.parse(raw)
-    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return undefined
-    const out: Record<string, Family> = {}
-    for (const [k, v] of Object.entries(obj)) {
-      const f = String(v).toLowerCase()
-      if ((FAMILIES as readonly string[]).includes(f)) out[k] = f as Family
-    }
-    return out
-  } catch {
-    return undefined
-  }
-}
-
-/** `{"Explore":"haiku"}` -> map. An empty string or bad JSON gives the default; `{}` switches the rules off. */
-export function parseSubagentModels(raw: unknown): Record<string, Family> {
-  const text = typeof raw === 'string' ? raw.trim() : ''
-  return (text !== '' ? toMap(text) : undefined) ?? toMap(DEFAULT_SUBAGENT_MODELS) ?? {}
-}
-
-export function parseList(raw: unknown): string[] {
-  return String(raw ?? '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-}
-
-export type SpawnFacts = {
-  subagentType: string
-  model?: string
-  fork?: boolean
-  isTeammate?: boolean
-  resume?: unknown
-  workflow?: unknown
-}
-export type SpawnPlan = { model?: Family; note: string }
-
-/** Which model a new subagent should get. Only plain subagents with no model named by the call are touched. */
-export function planSpawn(e: SpawnFacts, map: Record<string, Family>): SpawnPlan {
-  if (e.fork) return { note: 'fork: inherits the parent' }
-  if (e.resume !== undefined) return { note: 'resume: left alone' }
-  if (e.isTeammate) return { note: 'teammate: left alone' }
-  if (e.workflow !== undefined) return { note: 'workflow agent: left alone' }
-  if (e.model !== undefined && e.model !== '') return { note: `call chose ${e.model}` }
-  const hit = Object.entries(map).find(([name]) => name.toLowerCase() === e.subagentType.toLowerCase())
-  return hit ? { model: hit[1], note: `${e.subagentType} -> ${hit[1]}` } : { note: 'unchanged' }
-}
-
-/** Agent types the model should not be offered once the budget is tight (level 2 = past the second cap). */
-export function isOffered(agent: string, level: number, hidden: readonly string[]): boolean {
-  return !(level >= 2 && hidden.some(h => h.toLowerCase() === agent.toLowerCase()))
-}
-
-export type LogEntry =
-  | { t: number; k: 'prompt'; tier: string; why: string; model: string; effort: string; level: number; ctx: number }
-  | { t: number; k: 'spawn'; type: string; note: string; level: number }
-  | { t: number; k: 'hint'; agent: string }
-  | { t: number; k: 'escalate'; from: string; to: string; errors: number }
-  | { t: number; k: 'skill'; name: string }
-  | { t: number; k: 'idle'; ctx: number; usd: number }
-  | { t: number; k: 'learn'; bucket: string; why: string }
-  | { t: number; k: 'turn'; sub: boolean; model: string; inp: number; out: number; cr: number; cc: number; ms: number }
-
-export const MAX_LOG = 200
-
-export function pushLog(log: readonly LogEntry[], entry: LogEntry): LogEntry[] {
-  const next = [...log, entry]
-  return next.length > MAX_LOG ? next.slice(next.length - MAX_LOG) : next
-}
-
-const k = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
-
-/** The text behind `/route why`: recent decisions, spawn rules and today's token use. */
-export function summarize(log: readonly LogEntry[], since: number, hhmm: (ms: number) => string): string {
-  const lines: string[] = ['Budget router: recent decisions']
-  const prompts = log.filter((x): x is Extract<LogEntry, { k: 'prompt' }> => x.k === 'prompt')
-  if (prompts.length === 0) lines.push('  no routed prompts yet')
-  for (const p of prompts.slice(-8)) {
-    const caps = p.level > 0 ? ` [level ${p.level}]` : ''
-    lines.push(`  ${hhmm(p.t)} ${p.tier.padEnd(8)} -> ${p.model}·${p.effort}${caps}  (${p.why}; context ${k(p.ctx)})`)
-  }
-  const spawns = log.filter((x): x is Extract<LogEntry, { k: 'spawn' }> => x.k === 'spawn')
-  if (spawns.length > 0) {
-    lines.push('  subagents:')
-    for (const s of spawns.slice(-5)) lines.push(`    ${hhmm(s.t)} ${s.type}: ${s.note}`)
-  }
-  const skillUses = log.filter((x): x is Extract<LogEntry, { k: 'skill' }> => x.k === 'skill')
-  const hints = log.filter((x): x is Extract<LogEntry, { k: 'hint' }> => x.k === 'hint')
-  if (hints.length > 0) {
-    const per = new Map<string, { issued: number; followed: number }>()
-    for (const h of hints) {
-      const row = per.get(h.agent) ?? { issued: 0, followed: 0 }
-      row.issued++
-      const name = h.agent.toLowerCase()
-      const inWindow = (t: number) => t >= h.t && t <= h.t + 15 * 60_000
-      if (spawns.some(sp => inWindow(sp.t) && sp.type.toLowerCase().endsWith(name)) || skillUses.some(sk => inWindow(sk.t) && sk.name.toLowerCase().endsWith(name))) row.followed++
-      per.set(h.agent, row)
-    }
-    lines.push('  hints (followed = that agent or skill was used within 15 min):')
-    for (const [agent, r] of per) lines.push(`    ${agent}: ${r.issued} given, ${r.followed} followed`)
-  }
-  const escalations = log.filter((x): x is Extract<LogEntry, { k: 'escalate' }> => x.k === 'escalate')
-  if (escalations.length > 0) {
-    lines.push('  escalations (a turn with several failed tool calls got more effort or a stronger model):')
-    for (const x of escalations.slice(-5)) lines.push(`    ${hhmm(x.t)} ${x.from} -> ${x.to} after ${x.errors} failed tool calls`)
-  }
-  const idles = log.filter((x): x is Extract<LogEntry, { k: 'idle' }> => x.k === 'idle' && x.t >= since)
-  if (idles.length > 0) lines.push(`  idle cache rebuilds warned today: ${idles.length} (about $${idles.reduce((a, x) => a + x.usd, 0).toFixed(2)} of context re-written)`)
-  const learns = log.filter((x): x is Extract<LogEntry, { k: 'learn' }> => x.k === 'learn')
-  if (learns.length > 0) {
-    lines.push('  learned moves (the learner changed the rule-based choice):')
-    for (const x of learns.slice(-4)) lines.push(`    ${hhmm(x.t)} ${x.bucket}: ${x.why}`)
-  }
-  const today = log.filter((x): x is Extract<LogEntry, { k: 'turn' }> => x.k === 'turn' && x.t >= since)
-  if (today.length > 0) {
-    const sum = (rows: typeof today) =>
-      rows.reduce(
-        (a, r) => ({ inp: a.inp + r.inp, out: a.out + r.out, cr: a.cr + r.cr, cc: a.cc + r.cc, n: a.n + 1 }),
-        { inp: 0, out: 0, cr: 0, cc: 0, n: 0 },
-      )
-    const row = (name: string, s: ReturnType<typeof sum>) => {
-      const hit = s.inp + s.cr + s.cc > 0 ? Math.round((100 * s.cr) / (s.inp + s.cr + s.cc)) : 0
-      return `    ${name}: ${s.n} turns, in ${k(s.inp)}, out ${k(s.out)}, cache read ${k(s.cr)} / written ${k(s.cc)} (${hit}% of input from cache)`
-    }
-    lines.push('  tokens today (counted by this plugin):')
-    lines.push(row('main     ', sum(today.filter(r => !r.sub))))
-    const sub = today.filter(r => r.sub)
-    if (sub.length > 0) lines.push(row('subagents', sum(sub)))
-    const byModel = new Map<string, number>()
-    for (const r of today) byModel.set(r.model, (byModel.get(r.model) ?? 0) + r.inp + r.cr + r.cc + r.out)
-    lines.push(`    by model: ${[...byModel].map(([m, n]) => `${m.replace('claude-', '')} ${k(n)}`).join(', ')}`)
-  }
-  return lines.join('\n')
-}
-
 // ---------------------------------------------------------------------------------------
-// v0.4: Unreal build rules, agent hints, cache-aware switching and the skill audit.
+// Unreal build rules and cache-aware switching.
 
 /** Text that looks like an Unreal / C++ build, cook or packaging failure. */
 export const UE_BUILD_RE =
   /\b(UnrealBuildTool|UBT|UHT|RunUAT|LNK\d{3,4}|error C\d{4}|unresolved external|Build\.cs|LogCook|BUILD FAILED|cook(ing)? (failed|error)|packag(e|ing) (failed|error)|compile (failed|error))\b/i
 
 export const isUnrealBuildPrompt = (text: string) => UE_BUILD_RE.test(text)
-
-export type Hint = { agent: string; text: string }
-
-const HINT_RULES: ReadonlyArray<{ agent: string; test: (t: string) => boolean; text: string }> = [
-  {
-    agent: 'log-triage',
-    test: t => UE_BUILD_RE.test(t) || /\.log\b/i.test(t),
-    text: 'This looks like a build, cook or packaging failure. If a long log is involved, let budget-router:log-triage (Haiku, read-only) cut it down to its errors first, then fix the first error.',
-  },
-  {
-    agent: 'disk-auditor',
-    test: t => /\b(disk|storage|free space|drive (is )?full|largest (files?|folders?)|what('s| is) (using|taking|eating)( up)? (the )?(space|disk)|how (big|much space))\b/i.test(t),
-    text: 'For size surveys, let budget-router:disk-auditor (Haiku, read-only) do the measuring, then plan any deletions yourself.',
-  },
-  {
-    agent: 'repo-check',
-    test: t => /\b(unpushed|uncommitted|safe to (delete|remove|move)|before (deleting|removing|moving)|worktrees?|git status|local[- ]only)\b/i.test(t),
-    text: 'Before deleting or moving a repo, have budget-router:repo-check (Haiku, read-only) report what exists only locally.',
-  },
-  {
-    agent: 'reviewer',
-    test: t => /\b(code review|review (this|my|the) (diff|changes|branch|pr|pull request|code|commit)|check (my|this|the) (diff|changes|branch))\b/i.test(t),
-    text: 'For a diff or branch review, budget-router:reviewer (Sonnet, read-only) can do the first pass.',
-  },
-  {
-    agent: 'scout',
-    test: t => /\b(where is|where are|which files?|find all|find every|who (calls|uses)|usages? of|search (the )?(whole )?(codebase|repo|project|folder))\b/i.test(t),
-    text: 'For a broad search across many files, delegate it to budget-router:scout (Haiku) and ask for file:line references.',
-  },
-]
-
-/** At most one helper-agent suggestion for a prompt; deterministic, costs no tokens to decide. */
-export function helperHint(text: string): Hint | undefined {
-  const rule = HINT_RULES.find(r => r.test(text))
-  return rule ? { agent: rule.agent, text: `[budget-router hint] ${rule.text}` } : undefined
-}
 
 /**
  * Whether a one-step model change should be skipped because it would re-cache a long
@@ -218,40 +43,8 @@ export function projectExhaustion(samples: readonly PaceSample[], now: number, w
   return { ratePerHour: rate, at: Math.max(now, last.t + ((100 - last.daily) / rate) * 3_600_000) }
 }
 
-export const roughSize = (chars: number) => Math.ceil(chars / 4)
-
-export type CmdRow = { name: string; description: string; source: string; plugin?: string }
-
-/** What the slash-command / skill list costs: descriptions are text the model reads in every session. */
-export function auditCommands(rows: readonly CmdRow[]): string {
-  const own = rows.filter(r => r.source !== 'builtin')
-  const total = own.reduce((n, r) => n + r.description.length + r.name.length + 4, 0)
-  const lines = [
-    'Budget router: command and skill list',
-    `  ${own.length} entries from plugins, your files and MCP servers; about ${roughSize(total)} tokens of names and descriptions (estimate, chars/4).`,
-    '  Skills and plugin commands share this list; the model reads these lines every session.',
-  ]
-  const by = new Map<string, { n: number; chars: number }>()
-  for (const r of own) {
-    const origin = r.plugin ?? r.source
-    const row = by.get(origin) ?? { n: 0, chars: 0 }
-    row.n++
-    row.chars += r.description.length + r.name.length + 4
-    by.set(origin, row)
-  }
-  lines.push('  by source:')
-  for (const [origin, v] of [...by].sort((a, b) => b[1].chars - a[1].chars).slice(0, 8)) lines.push(`    ${origin}: ${v.n} entries, ~${roughSize(v.chars)} tokens`)
-  lines.push('  longest descriptions:')
-  for (const r of [...own].sort((a, b) => b.description.length - a.description.length).slice(0, 8)) {
-    lines.push(`    ${r.name} (${r.plugin ?? r.source}): ${r.description.length} chars, ~${roughSize(r.description.length)} tokens`)
-  }
-  lines.push('  To trim: plugin skills and commands are switched off in /plugin (a whole plugin at once); your own skills can be set to name-only or off in /skills (skillOverrides does not apply to plugin skills).')
-  return lines.join('\n')
-}
-
 // ---------------------------------------------------------------------------------------
-// v0.5: a PID pacer for the daily budget, escalation when a turn goes badly, and
-// suggestions of installed skills and agents ranked by BM25 keyword matching.
+// A PID pacer for the daily budget and escalation when a turn goes badly.
 
 export type EffortName = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type LadderSpec = { family: Family; effort: EffortName }
@@ -301,8 +94,6 @@ const LADDER: ReadonlyArray<LadderSpec> = [
   { family: 'opus', effort: 'xhigh' },
 ]
 export const LADDER_SIZE = LADDER.length
-export const rungSpec = (r: number): LadderSpec => LADDER[clamp(r, 0, LADDER.length - 1)] ?? LADDER[0]!
-export const rungName = (r: number): string => `${rungSpec(r).family}·${rungSpec(r).effort}`
 const EFFORT_RANK: Record<EffortName, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 const FAMILY_RANK: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2 }
 const costKey = (s: LadderSpec) => FAMILY_RANK[s.family] * 10 + EFFORT_RANK[s.effort]
@@ -339,80 +130,6 @@ export function applyEscalation(spec: LadderSpec, esc: Escalation): LadderSpec {
     family: esc.modelUp ? NEXT_FAMILY[spec.family] : spec.family,
     effort: esc.effortUp || esc.modelUp ? NEXT_EFFORT[spec.effort] : spec.effort,
   }
-}
-
-// -- Suggesting installed skills and agents (BM25) --------------------------------------
-
-export type CatalogItem = { kind: 'agent' | 'skill'; name: string; description: string; source: string; plugin?: string }
-
-const STOP = new Set(
-  ('the and for with that this from your you are was were have has had not but can will use used using when then than into onto over under about also just like want need make made get got ' +
-    'its their them they what which who whom how why where does did doing done any all some one two out off our his her she him per via too very more most much many such other another each ' +
-    'please should would could might must may let lets file files code these those there here').split(' '),
-)
-
-const stem = (w: string) => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)
-
-export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(w => w.length >= 3 && !STOP.has(w))
-    .map(stem)
-}
-
-export type CatalogIndex = { items: readonly CatalogItem[]; docs: ReadonlyArray<Map<string, number>>; lens: readonly number[]; avg: number; df: Map<string, number> }
-
-/** Each item becomes a bag of words: its name three times (so naming it counts) plus its description. */
-export function buildIndex(items: readonly CatalogItem[]): CatalogIndex {
-  const docs: Array<Map<string, number>> = []
-  const lens: number[] = []
-  const df = new Map<string, number>()
-  for (const it of items) {
-    const words = [...tokenize(it.name), ...tokenize(it.name), ...tokenize(it.name), ...tokenize(it.description)]
-    const tf = new Map<string, number>()
-    for (const w of words) tf.set(w, (tf.get(w) ?? 0) + 1)
-    docs.push(tf)
-    lens.push(words.length)
-    for (const w of tf.keys()) df.set(w, (df.get(w) ?? 0) + 1)
-  }
-  const avg = lens.length > 0 ? lens.reduce((a, b) => a + b, 0) / lens.length : 0
-  return { items, docs, lens, avg, df }
-}
-
-export type Suggestion = { item: CatalogItem; score: number; matched: string[] }
-export type SuggestOptions = { minScore: number; minMatches: number; margin: number }
-export const SUGGEST_DEFAULTS: SuggestOptions = { minScore: 5, minMatches: 2, margin: 1.25 }
-
-/** The one item that clearly fits the request, or nothing. BM25 with k1 = 1.2, b = 0.75. */
-export function suggestFrom(text: string, idx: CatalogIndex, opts: SuggestOptions = SUGGEST_DEFAULTS): Suggestion | undefined {
-  const terms = [...new Set(tokenize(text.slice(0, 600)))]
-  if (terms.length === 0 || idx.items.length === 0) return undefined
-  // A tiny catalog would give every word a near-zero weight, so score as if it held at least 40 items.
-  const n = Math.max(idx.items.length, 40)
-  const scored: Suggestion[] = []
-  idx.items.forEach((item, k) => {
-    const tf = idx.docs[k]
-    const len = idx.lens[k]
-    if (!tf || len === undefined) return
-    let score = 0
-    const matched: string[] = []
-    for (const t of terms) {
-      const f = tf.get(t)
-      if (!f) continue
-      const dfT = idx.df.get(t) ?? 0
-      const idf = Math.log(1 + (n - dfT + 0.5) / (dfT + 0.5))
-      score += (idf * (f * 2.2)) / (f + 1.2 * (1 - 0.75 + 0.75 * (len / (idx.avg || 1))))
-      matched.push(t)
-    }
-    if (matched.length > 0) scored.push({ item, score, matched })
-  })
-  scored.sort((a, b) => b.score - a.score)
-  const best = scored[0]
-  if (!best || best.score < opts.minScore || best.matched.length < opts.minMatches) return undefined
-  const second = scored[1]
-  if (second && best.score < opts.margin * second.score) return undefined
-  return best
 }
 
 // ---------------------------------------------------------------------------------------
@@ -534,17 +251,4 @@ export function learnedMove(l: Learned, bucket: string, baseRung: number, ladder
     if (n(base) >= opts.minSamples && wilson(base.s, n(base)).lo >= opts.target && n(cheaper) < opts.minSamples && opts.rand() < opts.explore) return { steps: 1, why: 'learned: trying the cheaper step' }
   }
   return undefined
-}
-
-export function learnedSummary(l: Learned, rungName: (r: number) => string): string[] {
-  const rows: Array<{ bucket: string; n: number; text: string }> = []
-  for (const [bucket, row] of Object.entries(l)) {
-    const parts = Object.entries(row)
-      .map(([r, c]) => ({ r: Number(r), c, n: c.s + c.f }))
-      .filter(x => x.n > 0)
-      .sort((a, b) => a.r - b.r)
-      .map(x => `${rungName(x.r)} ${Math.round((100 * x.c.s) / x.n)}% of ${x.n}`)
-    if (parts.length > 0) rows.push({ bucket, n: Object.values(row).reduce((a, c) => a + c.s + c.f, 0), text: parts.join(', ') })
-  }
-  return rows.sort((a, b) => b.n - a.n).slice(0, 8).map(x => `    ${x.bucket}: ${x.text}`)
 }

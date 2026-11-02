@@ -2,8 +2,6 @@
 
 Picks the model and effort for every turn, guards a daily usage budget, and learns what is enough for your kind of work.
 
-**Help it learn faster:** if you are willing, share your anonymous learner counts (a short JSON you can read first, no prompts, no names). See [Contribute your counts](#contribute-your-counts-optional) for exactly what is and is not in it. After about 60 learned turns the plugin shows one notice about this, once; the `inviteContribution` option turns it off.
-
 | Prompt looks like | Runs on |
 |---|---|
 | chit-chat, quick fact, one obvious command | Haiku · low |
@@ -16,15 +14,18 @@ Keyword rules label each prompt, and nothing is sent anywhere. On long conversat
 
 **Daily budget.** Claude subscriptions only have a 5-hour and a weekly limit, so the daily budget is what is left of the weekly limit, split evenly over the days until it resets. A quiet day leaves more for the next ones.
 
-- 50% of today's budget: alert, turns capped at Sonnet · high
-- 80%: alert, turns capped at Haiku · medium (the 5-hour window also triggers these caps)
+- 50% of today's budget: notice, turns capped at Sonnet · high
+- 80%: notice, turns capped at Haiku · medium (the 5-hour window also triggers these caps)
+- 90%: one wrap-up heads-up (`wrapUpPercent`, 0 turns it off)
 - 100%: turns stay at the second cap. budget-router never refuses a prompt, a tool call or a subagent; it only chooses the model and effort and tells you where you stand
 
-A status line under the prompt shows the route and the day / 5-hour / week percentages. It covers Claude Code only, not claude.ai chat in the browser or desktop app.
+The status bar under the prompt shows the route, the day / 5-hour / week percentages and what the learner has saved. It covers Claude Code only, not claude.ai chat in the browser or desktop app.
+
+The plugin itself is small on purpose: one hooks module with six hooks, no commands, no registered tools, nothing added to your prompts, no file or network access. [plugins/budget-router/README.md](plugins/budget-router/README.md) lists every hook and exactly what it reads and changes.
 
 ## Requirements
 
-Claude Code 2.1.286 or newer, signed in with a Claude subscription (Pro/Max). On an API key there are no rate-limit readings: routing still works, the budget does not.
+Claude Code 2.1.287 or newer, signed in with a Claude subscription (Pro/Max). On an API key there are no rate-limit readings: routing still works, the budget does not.
 
 ## Install
 
@@ -37,7 +38,11 @@ claude plugin install budget-router@budget-router-kit
 
 From a downloaded copy instead, pass the folder path to the first command: `claude plugin marketplace add "C:\path\to\budget-router-kit"`.
 
-Then start a new session with plain `claude`. No flags or settings are needed. Inside it, type `/budget`: it should print today's numbers, and the status line under the prompt shows the route. A Claude session that was already open when you installed needs a restart (or `/reload-plugins`).
+Then start a new session with plain `claude`. No flags or settings are needed. After the first reply the status bar under the prompt shows the route and today's budget. A Claude session that was already open when you installed needs a restart (or `/reload-plugins`).
+
+## Settings
+
+Everything is a plugin option in `/config`: the tier mapping, the two caps and their thresholds, the wrap-up point, pace control, the cache and idle notices, the learner mode, and `pin`, which fixes the route to a tier (`light`, `deep`, ...) or a model with an optional effort (`haiku`, `sonnet:low`, `opus:high`); `auto` routes every prompt. Caps still apply on top of a pin.
 
 ## How it differs from other tools
 
@@ -59,42 +64,17 @@ Limits to know about: it only guards Claude Code (not claude.ai chat), and the d
 
 | Component | Version |
 |---|---|
-| Claude Code | 2.1.302 (minimum supported 2.1.286) |
-| budget-router | 0.10.8 |
+| Claude Code | 2.1.302 (minimum supported 2.1.287) |
+| budget-router | 0.11.0 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
-| Test suite | 103 tests via `claude plugin test`, plus `claude plugin validate` |
+| Test suite | `claude plugin test` and `claude plugin validate` in `plugins/budget-router`, plus `node --test checks/compliance.test.mjs` |
 
-Not tested by the author: macOS and Linux (the time-zone and project-folder detection have a Unix path, covered by fallbacks but never run), API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
+Not tested by the author: macOS and Linux, API-key sessions, and plans that report per-model weekly limits (handled in code and unit-tested, never seen live). Reports of other setups are welcome.
 
-## Contribute your counts (optional)
+## Your own analysis (optional, offline)
 
-The learner starts from my guesses and your own record, and one person's work is not enough to tell which model and effort is enough for which kind of task. **I would be glad if you uploaded your counts**: with a few dozen contributions the shipped starting point gets much better for everyone, including new installs.
-
-**What is in the file**, and nothing else:
-
-| Included | Example |
-|---|---|
-| Plugin version | `"plugin": "0.10.0"` |
-| Total turns the learner has seen | `"turns": 120` |
-| Per model/effort pair: turns, turns that went well, total cost in dollars | `"sonnet·high": {"n": 40, "ok": 37, "usd": 1.9}` |
-| The same per kind of prompt (go, question, change, research, paste, shell, chat, ask) | `"kinds": {"question": {...}}` |
-
-**What is never in it:** your prompts or any text you typed, answers, file names, folder or project names (the learner keeps only a hash of the project folder and the export drops it), timestamps or dates, session ids, your account, plan or limits, the feature weights, or anything about other tools. The export is built from fixed fields in `smart.ts` (`exportContribution`), and a test checks that a project hash and the weights never appear in it.
-
-**How it works**
-
-1. Use the plugin for a while, then run `/budget learn export`. The plugin only prints; it never sends anything.
-2. Read the JSON. It is short. If anything in it looks private to you, do not share it.
-3. To share it, open an issue with the "Contribute your learner counts" template and paste it. A public issue is public: anyone can read and copy it, and deleting it later may not remove copies. Do not upload what you would not post publicly.
-4. `study/aggregate.py` merges contributions into `hooks/prior.ts`. A model/effort cell is only included once at least three different people contributed it, each person counts for at most 60 turns per cell, and a shipped cell counts for at most 4 observations in your learner, so your own record takes over quickly. The prior can shape the odds but never lets the learner step down on its own: that still needs evidence from your own turns.
-
-`/budget` shows whether a shared prior is in use. It is empty until enough people have contributed.
-
-**You do not have to upload anything: you can train your own.** Sharing is only a way to help the starting point. The learner already trains itself on your machine from your own turns (`learnMode: live`), and that record is the one that matters most for you. If you want to go further:
-
-- **Your own prior.** `aggregate.py` is a plain script that merges any folder of `/budget learn export` files into `hooks/prior.ts`. Run it on your own exports (or your team's, or your own machines') and install the plugin from your copy, and your starting point is yours, with nothing leaving your machines. `MIN_CONTRIBUTORS` (default 3) is the safeguard for public contributions; lower it if the contributors are all you.
-- **Your own analysis.** `study/extract.py` turns your local Claude Code transcripts into one row per prompt (no prompt text kept), and `describe.py` and `predict_size.py` read those rows. They are pure Python and run entirely offline, so you can see which model and effort is enough for your kind of work, or fit your own size predictor, without sharing a byte.
+`study/` (not part of the plugin, never run by it) holds scripts for looking at your own usage: `extract.py` turns your local Claude Code transcripts into one row per prompt (no prompt text kept), and `describe.py` and `predict_size.py` read those rows. They are pure Python and run entirely offline.
 
 ## Update
 
@@ -103,34 +83,13 @@ claude plugin marketplace update budget-router-kit
 claude plugin update budget-router@budget-router-kit
 ```
 
-## Use
-
-- `/budget`: today's numbers and the current route
-- `/budget reset`: re-measures today's budget from the next reply
-- `/budget learn`: what the cost-aware learner has seen and saved; `reset` clears it
-- Wrap-up notice: one heads-up when today's budget passes 90% (`wrapUpPercent`, 0 turns it off). The status line also shows what the learner has saved once it is over $0.05.
-- `/route deep`, `/route opus xhigh`, `/route sonnet`, `/route auto`: pin a tier or model for this session (caps still apply)
-- `/route why`: the latest routing decisions and today's token use with the share of input served from the prompt cache
-- `/config`: thresholds, caps, tier mapping and model ids
-
 ## Subagents
 
-budget-router does not change how subagents start (0.10.4 removed the model rules, the spawn lock and agent hiding). While a usage cap applies, a subagent's requests are lowered to the same cap as the main turn, never raised.
-
-**Decision log.** Routing decisions and per-turn token counts are kept in the plugin store (newest 200 rows, no prompt text, never sent anywhere). `/route why` prints them. Turn it off with `logDecisions`.
-
-## More in 0.4
-
-- **Unreal rules.** A prompt about UBT, UHT, linker (`LNK`), `error C####`, cook or packaging failures never runs on the trivial or light tier, and the model is told, in one hidden line, to let `log-triage` cut a long log down first. budget-router does not change permission prompts: with Epic's Unreal MCP, keep Claude's tool approvals on.
-- **Helper-agent hints.** A prompt that fits a helper (a size survey, a pre-delete repo check, a diff review, a wide search) gets one hidden line suggesting it. It is decided by keywords, costs no model call, and `/route why` shows how many hints were given and how many were followed.
-- **Cache-aware switching.** The "stay on the same model in a long conversation" rule now lapses once the cache has gone cold (`cacheWarmMinutes`, 55 by default), because switching is then free.
-- **Pace forecast.** `/budget` shows the burn rate over the last 90 minutes and when the day's budget would run out at that pace. One toast per day warns when that is within `paceWarnHours`.
-- **No lock.** Since 0.10.4 nothing is refused at 100%. For a real limit, Claude Code's own `autoContinueAtUsageLimit` setting makes a session wait for the reset.
-- **`/budget skills`** lists what the command and skill list costs (names plus descriptions, in estimated tokens, by plugin) and the longest descriptions.
+budget-router does not change how subagents start and hides no agents. While a usage cap applies, a subagent's requests are lowered to the same cap as the main turn, never raised.
 
 ## Helper agents
 
-All read-only, on cheap models, with short descriptions (about 60 tokens each in every session):
+All read-only, on cheap models, with short descriptions (about 60 tokens each in every session). Claude Code offers them to the model by their own descriptions:
 
 | Agent | Model | For |
 |---|---|---|
@@ -146,6 +105,8 @@ All read-only, on cheap models, with short descriptions (about 60 tokens each in
 claude plugin uninstall budget-router@budget-router-kit
 claude plugin marketplace remove budget-router-kit
 ```
+
+To also delete what it stored, remove its file in `~/.claude/plugins/store/` (the name starts with `budget-router_`).
 
 ## License
 

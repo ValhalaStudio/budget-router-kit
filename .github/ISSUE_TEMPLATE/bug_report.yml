@@ -12,8 +12,8 @@ body:
   - type: textarea
     id: budget
     attributes:
-      label: Output of /budget and /route why
-      description: Remove anything private first.
+      label: The status bar text and any budget-router notice
+      description: Copy the line under the prompt (route, day, 5h, week) and the notice text. Remove anything private first.
       render: text
   - type: input
     id: cc

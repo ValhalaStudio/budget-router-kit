@@ -1,30 +1,19 @@
 import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
-import {
-  addPace,
-  auditCommands,
-  helperHint,
-  isUnrealBuildPrompt,
-  parseList,
-  projectExhaustion,
-  pushLog,
-  shouldStick,
-  summarize,
-} from './policy'
-import type { LogEntry, PaceSample } from './policy'
-import { applyEscalation, buildIndex, escalationFor, pacerStep, paceSteps, shiftLadder, suggestFrom, targetPercent } from './policy'
-import type { CatalogIndex, CatalogItem, PacerState } from './policy'
-import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, estimateSavings, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, smartSummary, fadeFamily, kindOf, stepBucket, exportContribution, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
+import { addPace, isUnrealBuildPrompt, projectExhaustion, shouldStick } from './policy'
+import type { PaceSample } from './policy'
+import { applyEscalation, escalationFor, pacerStep, paceSteps, shiftLadder, targetPercent } from './policy'
+import type { PacerState } from './policy'
+import { ARMS, armIndex, armName, correct as smartCorrect, emptyStore, exploresLeft, features, followUp, noteExplore, pickArm, record as smartRecord, scopeOf, fadeFamily, kindOf, stepBucket, turnCostUsd, DEFAULT_PRICES, priceFor } from './smart'
 import type { Momentum, Price, SmartStore, Usage } from './smart'
-import { PRIOR, PRIOR_INFO } from './prior'
-import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, kTokens, ladderIndex, learnedMove, learnedSummary, recordOutcome, rungName, sizeBucket, sizeNudgeText, stepReadUsd, stepWriteUsd, usd } from './policy'
+import { LADDER_SIZE, REDO_RE, bucketOf, flipOutcome, idleRebuild, idleText, ladderIndex, learnedMove, recordOutcome, sizeBucket, sizeNudgeText } from './policy'
 import type { Learned } from './policy'
 
 // budget-router: picks the model and effort for every main-thread turn from
 // what the prompt asks for, and tightens that choice as today's share of the
-// account's usage limits runs down (50% -> first cap, 80% -> second cap,
-// 100% -> new prompts refused until local midnight). v0.3 also sets the model
-// of subagents (cheap read-only types on Haiku, no new ones at the lock),
-// can hide agent types once usage is tight, and keeps a decision log.
+// account's usage limits runs down (50% -> first cap, 80% -> second cap; at
+// 100% turns stay at the second cap, nothing is refused). Subagents are only
+// ever capped, never raised. It registers no tools or commands, adds nothing to
+// the prompt, and passes every event it does not route on unchanged.
 
 type Family = 'haiku' | 'sonnet' | 'opus'
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -70,12 +59,10 @@ type Opts = {
   haikuMaxContext: number
   stickyContext: number
   models: Record<Family, string>
-  logDecisions: boolean
-  agentHints: boolean
+  pin?: Pin
   unrealRules: boolean
   cacheWarmMinutes: number
   paceWarnHours: number
-  catalogHints: boolean
   escalateOnTrouble: boolean
   escalateAfterErrors: number
   escalateModelAfterErrors: number
@@ -91,7 +78,6 @@ type Opts = {
   learnExplore: number
   learnMode: 'live' | 'shadow' | 'classic' | 'off'
   qualityWeight: number
-  invite: boolean
   priceTable?: Record<Family, Price>
 }
 
@@ -117,12 +103,6 @@ const CONTINUE_RE =
 const TRIVIAL_RE = /^\s*(hi|hello|hey|thanks?|thank you|ty|cool|nice|great|ευχαριστώ|γεια)\b/i
 const DEEP_RE =
   /\b(architect\w*|design|refactor\w*|security|vulnerab\w*|root cause|investigat\w*|race condition|deadlock|memory leak|performance|optimi[sz]\w*|migrat\w*|research|trade-?offs?|strategy|audit|bypass)\b/i
-
-const GUIDANCE = `The budget-router plugin picks the model and effort for every turn, whatever the system prompt says you run on: trivial → Haiku, light/standard → Sonnet, deep or "think hard" → Opus. It caps turns at 50% and 80% of today's usage budget and never refuses a prompt. /budget shows the numbers, /route pins a tier.
-- If a task clearly needs deeper reasoning than this turn can give, say so in one line and suggest /route deep rather than guessing.
-- Spend tokens where they change the outcome: read only the line ranges you need, cap search output, never re-read a file you just edited, keep answers short unless asked for depth.
-- For a broad read-only sweep across many files where only the conclusion matters, delegate it to the budget-router:scout agent (Haiku) so the raw output stays out of this context. Do the work inline when it touches a few known files.
-- Other cheap helpers: budget-router:log-triage (long build, cook, UAT or test logs cut down to their errors), budget-router:disk-auditor (folder sizes, what fills a drive), budget-router:repo-check (git state: unpushed work, worktrees, LFS), and budget-router:reviewer (Sonnet, read-only diff review). Use them only for read-only work; make edits yourself.`
 
 const rankF = (f: Family) => FAMILIES.indexOf(f)
 const rankE = (e: Effort) => EFFORTS.indexOf(e)
@@ -192,12 +172,10 @@ function readOptions(options: PluginOptions): Opts {
       sonnet: str(options.sonnetModel, 'sonnet'),
       opus: str(options.opusModel, 'opus'),
     },
-    logDecisions: bool(options.logDecisions, true),
-    agentHints: bool(options.agentHints, true),
+    pin: parsePin(options.pin),
     unrealRules: bool(options.unrealRules, true),
     cacheWarmMinutes: num(options.cacheWarmMinutes, 55),
     paceWarnHours: num(options.paceWarnHours, 3),
-    catalogHints: bool(options.catalogHints, true),
     escalateOnTrouble: bool(options.escalateOnTrouble, true),
     escalateAfterErrors: num(options.escalateAfterErrors, 3),
     escalateModelAfterErrors: num(options.escalateModelAfterErrors, 6),
@@ -213,17 +191,25 @@ function readOptions(options: PluginOptions): Opts {
     learnExplore: num(options.learnExplore, 0.1),
     learnMode: (['live', 'shadow', 'classic', 'off'].includes(str(options.learnMode, 'live')) ? str(options.learnMode, 'live') : 'live') as Opts['learnMode'],
     qualityWeight: num(options.qualityWeight, 0.05),
-    invite: bool(options.inviteContribution, true),
     priceTable: parsePrices(options.priceTable),
   }
 }
 
-// Session-local: the options, the route the current turn runs on, a /route
-// pin, the last known context size and budget level. A reload starts them over.
+/** The `pin` option: blank or `auto` routes automatically; a tier name or `model[:effort]` fixes the route. */
+function parsePin(raw: unknown): Pin | undefined {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+  if (v === '' || v === 'auto') return undefined
+  if (TIERS.includes(v as Tier)) return { tier: v as Tier }
+  const [f = '', e = ''] = v.split(/[:·\s]+/)
+  if (!FAMILIES.includes(f as Family)) return undefined
+  return { spec: { family: f as Family, effort: EFFORTS.includes(e as Effort) ? (e as Effort) : 'high' } }
+}
+
+// Session-local: the options, the route the current turn runs on, the pin from
+// the options, the last known context size and budget level. A reload starts them over.
 let o: Opts = readOptions({})
 let route: Route | undefined
 let pin: Pin | undefined
-let armed: { name: string; args: string } | undefined
 let ctxTokens = 0
 let level: Pressure['level'] = 0
 let tzMin = -new Date().getTimezoneOffset()
@@ -251,7 +237,6 @@ async function learn($: EngineInterface, model: string) {
 
 const localDay = (ms: number) => new Date(ms + tzMin * 60_000).toISOString().slice(0, 10)
 const clock = (ms: number) => new Date(ms + tzMin * 60_000).toISOString().slice(11, 16)
-const stamp = (ms: number) => new Date(ms + tzMin * 60_000).toISOString().slice(5, 16).replace('T', ' ')
 const nextMidnight = (ms: number) => {
   const d = new Date(ms + tzMin * 60_000)
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - tzMin * 60_000
@@ -320,21 +305,6 @@ function pressure(l: Ledger | undefined, now: number): Pressure {
 
 const loadLedger = async ($: EngineInterface) => (await $.store.get(STORE_KEY)) as Ledger | undefined
 
-// The decision log: what was routed and why, subagent rules applied, and the
-// tokens each turn used. Kept in the plugin store (newest 200 rows), never sent
-// anywhere. It holds no prompt text.
-const LOG_KEY = 'decisions'
-const loadLog = async ($: EngineInterface) => ((await $.store.get(LOG_KEY)) as LogEntry[] | undefined) ?? []
-
-async function addLog($: EngineInterface, entry: LogEntry) {
-  if (!o.logDecisions) return
-  try {
-    await $.store.set(LOG_KEY, pushLog(await loadLog($), entry))
-  } catch {
-    // logging must never get in the way of the work
-  }
-}
-
 const PACE_KEY = 'pace'
 
 // Samples of today's budget use over time: the burn rate, and a one-time heads-up
@@ -349,7 +319,7 @@ async function paceWatch($: EngineInterface, p: Pressure, now: number) {
       paceNote = `at the last 90 minutes' pace (${Math.round(pr.ratePerHour)}% of the day per hour) today's budget runs out around ${clock(pr.at)}`
       if (p.level < 2 && (pr.at - now) / 3_600_000 <= o.paceWarnHours && paceWarnedDay !== localDay(now)) {
         paceWarnedDay = localDay(now)
-        $.ui.toast(`⏱ ${paceNote}. /route light or /route haiku slows it down.`, { timeoutMs: 20_000 })
+        $.ui.toast(`⏱ ${paceNote}. Setting the plugin's pin option to light or haiku in /config slows it down.`, { timeoutMs: 20_000 })
       }
     } else if (pr) {
       paceNote = `pace ${Math.round(pr.ratePerHour)}% of the day per hour: fine for today`
@@ -359,12 +329,10 @@ async function paceWatch($: EngineInterface, p: Pressure, now: number) {
   }
 }
 
-// ---- v0.5: pacer, escalation, and suggestions from the installed skills and agents ----
+// ---- pace controller and escalation ----
 const PACER_KEY = 'pacer'
 let pacerU = 0 // controller output: how many cost steps to shed (0 to 2)
 let escalation: { turnId: string; effortUp: boolean; modelUp: boolean } | undefined
-const catalog = new Map<string, CatalogItem>()
-let catalogIndex: CatalogIndex | undefined
 
 async function pacerUpdate($: EngineInterface, p: Pressure, now: number) {
   if (!o.paceControl) {
@@ -384,30 +352,6 @@ async function pacerUpdate($: EngineInterface, p: Pressure, now: number) {
   }
 }
 
-function noteCatalog(item: CatalogItem) {
-  if (item.plugin === 'budget-router' || item.name.startsWith('budget-router')) return
-  catalog.set(`${item.kind}:${item.name}`, item)
-  catalogIndex = undefined
-}
-
-async function refreshCatalog($: EngineInterface) {
-  try {
-    for (const c of await $.command.list()) {
-      if (c.source === 'builtin') continue
-      noteCatalog({ kind: 'skill', name: c.name, description: c.description, source: c.source, ...(c.plugin ? { plugin: c.plugin } : {}) })
-    }
-  } catch {
-    // suggestions are optional
-  }
-}
-
-function catalogSuggest(text: string) {
-  const items = [...(o.catalogHints ? catalog.values() : [])]
-  if (items.length === 0) return undefined
-  catalogIndex ??= buildIndex(items)
-  return suggestFrom(text, catalogIndex)
-}
-
 // ---- v0.6: ghost-token guard, learner ----
 const BANDIT_KEY = 'bandit'
 let learnedData: Learned = {}
@@ -419,8 +363,6 @@ let pending: { bucket: string; rung: number; text: string } | undefined
 let lastOutcome: { bucket: string; rung: number; ok: boolean; at: number } | undefined
 // Smart learner (0.8): cost-aware bandit, see smart.ts. Stores only counts, costs and hashed weights.
 const SMART_KEY = 'smart'
-const PLUGIN_VERSION = '0.10.8'
-const INVITE_AFTER = 60
 let smartData: SmartStore = emptyStore()
 type SmartPending = { kind: string; project: string; arm: number; base: number; x: number[]; text: string; shadow: boolean }
 let smartPending: SmartPending | undefined
@@ -454,14 +396,12 @@ async function detectProject($: EngineInterface) {
 }
 const smartOn = () => o.learn && (o.learnMode === 'live' || o.learnMode === 'shadow')
 
-const plain = (v: string) => v.replace(/[^A-Za-z0-9 .:_/-]/g, '').slice(0, 60)
+// Data older versions kept and this one no longer has a use for: deleted at start.
+const RETIRED_KEYS = ['cmdstats', 'runbooks', 'decisions']
 async function loadV06($: EngineInterface) {
-  // Versions up to 0.10.4 kept the text of repeated shell commands; this one keeps none, and clears what was kept.
-  await $.store.delete('cmdstats')
-  await $.store.delete('runbooks')
+  for (const key of RETIRED_KEYS) await $.store.delete(key)
   learnedData = ((await $.store.get(BANDIT_KEY)) as Learned | undefined) ?? {}
   smartData = ((await $.store.get(SMART_KEY)) as SmartStore | undefined) ?? emptyStore()
-  catalogIndex = undefined
   v06Loaded = true
 }
 
@@ -485,11 +425,6 @@ async function afterMainTurn($: EngineInterface, e: { answer: string; isAborted:
       const cost = u ? turnCostUsd(u.family, u, o.priceTable ? o.priceTable : { ...DEFAULT_PRICES, [u.family]: priceFor(u.model, u.family) }) : 0
       smartLast = { ...sp, ok, at: Date.now() }
       smartData = smartRecord(smartData, { kind: sp.kind, project: sp.project, arm: sp.arm, base: sp.base, x: sp.x, ok, costUsd: cost, now: Date.now() })
-      // One invitation, once, after enough turns to have something worth sharing. Never repeated.
-      if (o.invite && !smartData.invited && smartData.seen >= INVITE_AFTER) {
-        smartData = { ...smartData, invited: true }
-        $.ui.toast(`budget-router has learned from ${smartData.seen} of your turns. If you would like to help it start better for others, /budget learn export prints anonymous counts (no prompts, no names) that you can read and choose to share. This notice shows once; the inviteContribution option turns it off.`, { timeoutMs: 30_000 })
-      }
       await $.store.set(SMART_KEY, smartData)
     } catch {
       // learning is optional
@@ -522,11 +457,7 @@ async function troubleAdjust($: EngineInterface, e: { turnId: string; index: num
       if (esc.effortUp || esc.modelUp) {
         const before = escalation
         const merged = { turnId: e.turnId, effortUp: esc.effortUp || before?.effortUp === true, modelUp: esc.modelUp || before?.modelUp === true }
-        if (!before || before.effortUp !== merged.effortUp || before.modelUp !== merged.modelUp) {
-          escalation = merged
-          const to = applyEscalation(base, merged)
-          await addLog($, { t: Date.now(), k: 'escalate', from: `${base.family}·${base.effort}`, to: `${to.family}·${to.effort}`, errors })
-        }
+        if (!before || before.effortUp !== merged.effortUp || before.modelUp !== merged.modelUp) escalation = merged
       }
     } catch {
       // keep the route as chosen
@@ -583,7 +514,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     const base = armIndex(spec)
     const kind = smartKind
     const now = Date.now()
-    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random, kind, prior: PRIOR })
+    const pick = pickArm({ base, tier, scope: scopeOf(smartData, kind, smartProject), w: smartData.weights, x: smartX, now, dailyUsedPct: p.daily, qualityWeight: o.qualityWeight, typical: lastTurnUsage, exploresLeft: exploresLeft(smartData, dayKey()), minSamples: o.learnMinSamples, explore: o.learnExplore, rand: Math.random })
     const live = o.learnMode === 'live'
     smartDecision = { kind, base, arm: live ? pick.arm : base, shadowArm: pick.arm, why: pick.why, explored: pick.explored && live }
     if (live && pick.arm !== base) {
@@ -613,7 +544,7 @@ function decide(tier: Tier, why: string, p: Pressure): Route {
     }
   }
   // Pace control: spending ahead of an even day sheds one or two cost steps before any cap
-  // applies. An explicit "think hard" (max) and a /route pin are left alone.
+  // applies. An explicit "think hard" (max) and a pinned route are left alone.
   const shed = o.paceControl && !pin && tier !== 'max' ? paceSteps(pacerU) : 0
   if (shed > 0) {
     const lowered = shiftLadder(spec, shed)
@@ -666,62 +597,17 @@ function wrapUp($: EngineInterface, p: Pressure, now: number) {
     .catch(() => undefined)
 }
 
-function report(l: Ledger | undefined, p: Pressure, now: number): string {
-  const lines = ['Budget router']
-  if (!l) {
-    lines.push('  No rate-limit reading yet: it appears after the first reply on a Claude subscription.')
-  } else {
-    lines.push(
-      `  today ${l.day}: ${Math.round(p.daily)}% of the daily budget used (${p.usedPts.toFixed(1)} of ${p.budgetPts.toFixed(1)} weekly points); day ends ${clock(nextMidnight(now))}`,
-      `  weekly window: ${Math.round(p.week)}% used, resets ${stamp(Date.parse(l.windowReset))}`,
-      `  5-hour window: ${Math.round(p.five)}%${l.fiveHourReset ? `, resets ${clock(Date.parse(l.fiveHourReset))}` : ''}`,
-      `  level: ${LEVEL_NAMES[p.level]}`,
-    )
-  }
-  lines.push(
-    `  route: ${route ? `${route.family}·${route.effort} for a ${route.tier} turn (${route.why})` : 'not chosen yet'}${pin ? ' [pinned: /route auto to release]' : ''}`,
-    `  caps: ${o.warnPercent}% → ${o.warnCap.family}·${o.warnCap.effort}, ${o.criticalPercent}% → ${o.criticalCap.family}·${o.criticalCap.effort}, 100% → stays at the second cap`,
-    `  /route why shows the recent decisions and today's token use${o.logDecisions ? '' : ' (logging is off)'}; /budget skills checks the skill list`,
-  )
-  if (ctxTokens > 0) lines.push(`  context: ${kTokens(ctxTokens)} tokens, about ${usd(stepReadUsd(ctxTokens, route?.family ?? 'sonnet'))} to re-read per step from cache, about ${usd(stepWriteUsd(ctxTokens, route?.family ?? 'sonnet'))} if the cache has expired; /compact or a fresh session shrinks it`)
-  if (paceNote !== '') lines.push(`  ${paceNote}`)
-  lines.push(`  pace control: ${!o.paceControl ? 'off' : pacerU >= 0.5 ? `shedding ${paceSteps(pacerU)} cost step(s) (controller ${pacerU.toFixed(2)})` : `on, on pace (controller ${pacerU.toFixed(2)})`}`)
-  lines.push(`  idle guard: ${o.idleGuard}${o.idleGuard === 'off' ? '' : ` (after ${o.cacheWarmMinutes} min idle)`}; context nudge ${o.nudgeContext > 0 ? `every ${kTokens(o.nudgeContext)}` : 'off'}`)
-  if (!o.learn || o.learnMode === 'off') lines.push('  learner: off')
-  else if (smartOn()) {
-    const rows = smartSummary(smartData, Date.now())
-    lines.push(`  learner: ${o.learnMode} (cost-aware, ${smartData.seen} turns seen${rows.length === 0 ? ', nothing recorded yet' : ''}; ${PRIOR_INFO.contributors > 0 ? `shared prior from ${PRIOR_INFO.contributors} contributors` : 'no shared prior yet'}; /budget learn for detail)`)
-    lines.push(...rows)
-  } else {
-    const rows = learnedSummary(learnedData, rungName)
-    lines.push(`  learner: on, success rate per kind of prompt and model step${rows.length === 0 ? ' (no turns recorded yet)' : ':'}`)
-    lines.push(...rows)
-  }
-  return lines.join('\n')
-}
-
 export const register: Register = (on, options) => {
   o = readOptions(options)
+  pin = o.pin
 
+  // Loads what the plugin stored (budget ledger, model ids seen, pace, learner counts) and the
+  // working folder's name, hashed. Registers nothing.
   on('session.start', async ($, e, next) => {
     await detectProject($)
-    const argsSchema = { type: 'object', properties: { args: { type: 'string', description: 'Everything the person typed after the command name, as typed; empty when nothing.' } } }
-    await $.tool.register({
-      name: 'budget',
-      description: "Backs the /budget command: today's usage budget and route, /budget learn [reset|export], skills, reset, wipe. Returns the text to show the person.",
-      inputSchema: argsSchema,
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'route',
-      description: 'Backs the /route command: pin the model/effort tier for this session, or auto; /route why lists recent decisions. Returns the text to show the person.',
-      inputSchema: argsSchema,
-      isDeferred: false,
-    })
     learned = ((await $.store.get(MODELS_KEY)) as typeof learned | undefined) ?? {}
     const savedPacer = (await $.store.get(PACER_KEY)) as PacerState | undefined
     pacerU = savedPacer && savedPacer.day === localDay(Date.now()) ? savedPacer.u : 0
-    await refreshCatalog($)
     await loadV06($)
     const p = pressure(await loadLedger($), Date.now())
     level = p.level
@@ -729,13 +615,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Once per conversation, beside CLAUDE.md: stable text, so it stays in the
-  // prompt cache.
-  on('prompt.context', async ($, e, next) => {
-    const r = await next(e)
-    return { ...r, blocks: [...r.blocks, { name: 'budgetRouter', text: GUIDANCE }] }
-  })
-
+  // Reads the rate-limit and context figures Claude Code reports; passes the event on unchanged.
   on('session.measure', async ($, e, next) => {
     ctxTokens = e.context.tokens ?? ctxTokens
     if (o.nudgeContext > 0) {
@@ -758,7 +638,7 @@ export const register: Register = (on, options) => {
         alert($, p, now)
         l.alerted = p.level
       }
-      // One heads-up before the lock, so there is time to finish the thing in hand.
+      // One heads-up before the second cap holds for the rest of the day, so there is time to finish.
       if (o.wrapUpPercent > 0 && !l.wrapped && p.level < 3 && p.daily >= o.wrapUpPercent) {
         l.wrapped = true
         wrapUp($, p, now)
@@ -772,20 +652,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Reads the typed prompt to choose the route for the turn. The prompt is passed on exactly as received.
   on('prompt.submit', async ($, e, next) => {
     const now = Date.now()
-    const l = await loadLedger($)
-    const p = pressure(l, now)
+    const p = pressure(await loadLedger($), now)
     level = p.level
     if (!v06Loaded) await loadV06($)
-    const isOwnCommand = /^\s*\/(budget-router:)?(budget|route)\b/.test(e.text)
-    // The command tools answer only a command the person typed, with the arguments they typed: a tool call
-    // the model makes on its own (say, after reading a hostile file) finds nothing armed and is refused.
-    const typed = e.command?.name.match(/^(?:budget-router:)?(budget|route)$/)?.[1]
-    armed = typed !== undefined && e.turnId === undefined && e.agentId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) ? { name: typed, args: e.command?.args ?? '' } : undefined
-    let extra: string[] = []
     // A prompt typed into a running turn rides that turn's model.
-    if (e.turnId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !isOwnCommand) {
+    if (e.turnId === undefined && ['composer', 'bridge', 'sdk'].includes(e.origin.kind)) {
       try {
         ctxTokens = (await $.session.usage()).context.tokens ?? ctxTokens
       } catch {
@@ -811,10 +685,7 @@ export const register: Register = (on, options) => {
       }
       // Ghost-token guard: after a long pause the cache has expired and the whole context is re-written.
       const idle = o.idleGuard === 'off' ? undefined : idleRebuild(ctxTokens, lastMainTurnAt > 0 ? now - lastMainTurnAt : undefined, o.cacheWarmMinutes * 60_000, o.idleMinContext, route?.family ?? 'sonnet')
-      if (idle) {
-        await addLog($, { t: now, k: 'idle', ctx: idle.ctx, usd: Math.round(idle.rebuildUsd * 100) / 100 })
-        $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
-      }
+      if (idle) $.ui.toast(idleText(idle), { timeoutMs: 20_000 })
       let c: { tier: Tier; why: string } = pin ? { tier: pin.tier ?? route?.tier ?? 'standard', why: 'pinned' } : classify(e.text, route?.tier)
       // Build, link and cook errors need more than the cheapest tier.
       if (o.unrealRules && !pin && isUnrealBuildPrompt(e.text) && (c.tier === 'trivial' || c.tier === 'light')) {
@@ -831,39 +702,12 @@ export const register: Register = (on, options) => {
         if (smartDecision.explored) smartData = noteExplore(smartData, dayKey())
       }
       pending = o.learn && !pin ? { bucket: currentBucket, rung: route.rung ?? 0, text: e.text.slice(0, 300) } : undefined
-      if (route.why.includes('learned')) await addLog($, { t: now, k: 'learn', bucket: currentBucket, why: route.why.split(', ').filter(x => x.startsWith('learned')).join('; ') })
-      await addLog($, {
-        t: now,
-        k: 'prompt',
-        tier: route.tier,
-        why: route.why,
-        model: route.family,
-        effort: route.effort,
-        level: p.level,
-        ctx: ctxTokens,
-      })
-      // One suggestion at most, decided by keywords (no model call): this plugin's own helper
-      // agents first, then any installed skill or agent whose description clearly fits.
-      if (o.agentHints && route.tier !== 'trivial') {
-        const hint = helperHint(e.text)
-        if (hint) {
-          extra = [hint.text]
-          await addLog($, { t: now, k: 'hint', agent: hint.agent })
-        } else if (o.catalogHints) {
-          const found = catalogSuggest(e.text)
-          if (found) {
-            // someone else's skill or agent: tell the person, never steer the model toward it
-            const owner = found.item.plugin ? ` from ${plain(found.item.plugin)}` : ''
-            $.ui.toast(`An installed ${found.item.kind}${owner} may fit this request: ${plain(found.item.name)}. Use it if you want it.`, { timeoutMs: 15_000 })
-            await addLog($, { t: now, k: 'hint', agent: found.item.name })
-          }
-        }
-      }
     }
     showStatus($, p)
-    return next(extra.length > 0 ? { ...e, context: [...(e.context ?? []), ...extra] } : e)
-  })
+    return next(e)
+  }).catch(($, e, next) => next(e)) // a failure here never stops the prompt: it goes on unchanged
 
+  // Sets model and effort for each request: the route for main-conversation turns; subagents are only capped.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
       // Subagents keep the model they were given; past a threshold they are
@@ -887,15 +731,11 @@ export const register: Register = (on, options) => {
     const base = route ?? capSpec(o.tiers.standard, level >= 2 ? o.criticalCap : level === 1 ? o.warnCap : o.tiers.max)
     const spec = await troubleAdjust($, e, base)
     return yield* next({ ...e, model: modelId(spec.family), effort: spec.effort })
+  }).catch(async function* ($, e, next) {
+    return yield* next(e) // a failure here leaves the request on the model Claude Code chose
   })
 
-  // Only listens, to know which skills and agents are installed; every offer passes on unchanged.
-  on('agent.offer', ($, e, next) => {
-    if (e.source !== 'built-in') noteCatalog({ kind: 'agent', name: e.agent, description: e.description, source: e.source })
-    return next(e)
-  })
-
-  // Passes every tool call through untouched; see observeTool.
+  // Passes every tool call through untouched and returns exactly what next gives back; see observeTool.
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     try {
@@ -904,155 +744,16 @@ export const register: Register = (on, options) => {
       // observing must never get in the way
     }
     return r
-  })
+  }).catch(($, e, next) => next(e)) // the call's own result, never run twice (next is replay-safe here)
 
-  // Records which skill was used, so /route why can say whether a suggestion was followed.
-  on('skill.prompt', async ($, e, next) => {
-    await addLog($, { t: Date.now(), k: 'skill', name: e.skill })
-    return next(e)
-  })
-
+  // Reads the token counts of a finished turn for the learner; returns what next gives back.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) armed = undefined // a typed command is good for the one turn it starts
     const r = await next(e)
     const u = r.usage ?? e.usage
     if (e.agentId === undefined) {
       lastMainTurnAt = Date.now()
       await afterMainTurn($, e, u ? { inp: u.input_tokens, out: u.output_tokens, cr: u.cache_read_input_tokens, cc: u.cache_creation_input_tokens, family: familyOf(u.model), model: u.model } : undefined)
     }
-    if (u) {
-      await addLog($, {
-        t: Date.now(),
-        k: 'turn',
-        sub: e.agentId !== undefined,
-        model: u.model,
-        inp: u.input_tokens,
-        out: u.output_tokens,
-        cr: u.cache_read_input_tokens,
-        cc: u.cache_creation_input_tokens,
-        ms: e.durationMs,
-      })
-    }
     return r
   })
-
-  // The slash commands are markdown files (commands/*.md) that call these two tools, so the tools answer
-  // and the engine's own commands are left alone.
-  // Stands in for these two tools only, which exist only because this plugin registers them; no other tool call is matched here.
-  on('tool.call', { tool: /^mcp__budget.router__(budget|route)$/ }, async ($, e) => {
-    const which = /(budget|route)$/.exec(e.tool)?.[1]
-    const mine = e.agentId === undefined ? armed : undefined
-    if (e.agentId === undefined) armed = undefined
-    if (mine === undefined || mine.name !== which) {
-      return { result: `budget-router: /budget-router:${which} only runs when the person types it; nothing was done.` }
-    }
-    const args = mine.args
-    const r = which === 'budget' ? await budgetCommand($, args) : await routeCommand($, args)
-    // The person reads the exact text as transcript lines (the terminal draws 2000 characters of a line, so
-    // long text goes in pieces); the model only has to say it is done, so nothing is reworded or cut.
-    for (const piece of pieces(r.text)) $.ui.log(piece)
-    return { result: r.text }
-  }).catch(() => ({ result: 'budget-router: that command failed; nothing was changed.' }))
-}
-
-/** Splits text at line breaks into pieces of at most `max` characters (a longer single line is cut). */
-function pieces(text: string, max = 1800): string[] {
-  const out: string[] = []
-  let cur = ''
-  for (const line of text.split('\n')) {
-    if (cur !== '' && cur.length + line.length + 1 > max) {
-      out.push(cur)
-      cur = ''
-    }
-    cur = cur === '' ? line : `${cur}\n${line}`
-    while (cur.length > max) {
-      out.push(cur.slice(0, max))
-      cur = cur.slice(max)
-    }
-  }
-  if (cur !== '') out.push(cur)
-  return out
-}
-
-async function budgetCommand($: EngineInterface, args: string): Promise<{ text: string }> {
-  const raw = args.trim()
-  const arg = raw.toLowerCase()
-  const now = Date.now()
-  const l = await loadLedger($)
-  if (arg === 'learn' || arg.startsWith('learn ')) {
-    if (!v06Loaded) await loadV06($)
-    const sub = arg.slice(5).trim()
-    if (sub === 'reset') {
-      smartData = emptyStore()
-      smartLast = undefined
-      await $.store.delete(SMART_KEY)
-      return { text: 'Smart learner cleared. It starts from the rule choice again.' }
-    }
-    if (sub === 'export') {
-      const c = exportContribution(smartData, PLUGIN_VERSION, now)
-      return { text: ['Learner counts, ready to share if you choose to (nothing is sent anywhere by this plugin). Only turn counts, successes and cost per model/effort and kind of prompt: no prompt text, folders, project names or dates. See README, "Contribute your counts".', JSON.stringify(c, null, 1)].join('\n') }
-    }
-    const rows = smartSummary(smartData, now)
-    const sav = estimateSavings(smartData)
-    return { text: [`Smart learner: mode ${o.learnMode}, ${smartData.seen} turns seen, ${exploresLeft(smartData, dayKey())} explorations left today.`, rows.length === 0 ? '  nothing recorded yet' : 'Success rate and cost per turn, by kind of work:', ...rows, `Estimated saving versus always taking the rule choice: about $${sav.toFixed(2)} (price-table estimate, not an invoice).`, '/budget learn reset clears it; /budget learn export prints counts you can choose to share (no prompt text is stored).'].join('\n') }
-  }
-  if (arg === 'skills') return { text: auditCommands(await $.command.list()) }
-  if (arg === 'wipe') {
-    // Everything this plugin keeps: the budget ledger, models seen, burn-rate samples, the decision
-    // log, pace controller and the learner's counts.
-    for (const key of [STORE_KEY, MODELS_KEY, LOG_KEY, PACE_KEY, PACER_KEY, BANDIT_KEY, SMART_KEY]) await $.store.delete(key)
-    learned = {}
-    pacerU = 0
-    learnedData = {}
-    smartData = emptyStore()
-    smartPending = undefined
-    smartLast = undefined
-    pending = undefined
-    lastOutcome = undefined
-    catalogIndex = undefined
-    level = 0
-    showStatus($, pressure(undefined, now))
-    return { text: 'Everything budget-router had stored is deleted.' }
-  }
-  if (arg === 'reset') {
-    await $.store.delete(STORE_KEY)
-    level = 0
-    showStatus($, pressure(undefined, now))
-    return { text: "Budget ledger cleared; today's budget re-baselines on the next reply." }
-  }
-  const p = pressure(l, now)
-  showStatus($, p)
-  return { text: report(l, p, now) }
-}
-
-
-async function routeCommand($: EngineInterface, args: string): Promise<{ text: string }> {
-  const [a = '', b = ''] = args.trim().toLowerCase().split(/\s+/)
-  const p = pressure(await loadLedger($), Date.now())
-  if (a === '') {
-    return { text: report(await loadLedger($), p, Date.now()) }
-  }
-  if (a === 'why') {
-    const now = Date.now()
-    return { text: summarize(await loadLog($), nextMidnight(now) - DAY_MS, clock) }
-  }
-  if (a === 'auto') {
-    pin = undefined
-    route = undefined
-  } else if (TIERS.includes(a as Tier)) {
-    pin = { tier: a as Tier }
-    route = decide(a as Tier, 'pinned', p)
-  } else if (FAMILIES.includes(a as Family)) {
-    const effort = EFFORTS.includes(b as Effort) ? (b as Effort) : 'high'
-    pin = { spec: { family: a as Family, effort } }
-    route = decide(route?.tier ?? 'standard', 'pinned', p)
-  } else {
-    return { text: 'Usage: /route why | auto | trivial | light | standard | deep | max | haiku|sonnet|opus [low|medium|high|xhigh|max]' }
-  }
-  showStatus($, p)
-  return {
-    text: pin
-      ? `Pinned to ${route?.family}·${route?.effort} for this session (budget caps still apply). /route auto releases it.`
-      : 'Routing is automatic again.',
-  }
 }
