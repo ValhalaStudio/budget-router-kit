@@ -111,7 +111,7 @@ What no other tool I found does: treat the weekly limit as a daily budget, and l
 | Component | Version |
 |---|---|
 | Claude Code | 2.1.316 (minimum supported 2.1.287) |
-| budget-router | 0.11.0 |
+| budget-router | 0.11.1 |
 | OS | Windows 11 |
 | Plan | Claude subscription with 5-hour and weekly limits |
 | Checks | `claude plugin validate` and `claude plugin test` in `plugins/budget-router`, `node --test checks/compliance.test.mjs`, `node checks/directory-replica.mjs` |
