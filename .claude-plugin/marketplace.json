@@ -4,7 +4,7 @@
     "name": "ValhalaStudio"
   },
   "metadata": {
-    "description": "Budget-aware model routing for Claude Code, with a local learner that gets better with use"
+    "description": "Budget-aware model routing (budget-router) and its markdown-only companion (budget-router-lite) for Claude Code"
   },
   "plugins": [
     {
@@ -12,6 +12,12 @@
       "source": "./plugins/budget-router",
       "description": "Stop burning your weekly Claude limit by accident. Picks the model and effort for every prompt, turns your weekly limit into a daily budget with a wrap-up warning before the caps tighten, and learns which cheaper setting is enough for your work. Shows the budget in the status bar. Local only: sends nothing, reads no files, adds nothing to your prompts.",
       "version": "0.11.1"
+    },
+    {
+      "name": "budget-router-lite",
+      "source": "./plugins/budget-router-lite",
+      "description": "Make your Claude limit last: side questions in a fresh context on Haiku, one-prompt model and effort switches, a handoff before you clear, a daily-allowance calculator, a verified token-saving cheatsheet and five read-only helper agents. Markdown only.",
+      "version": "0.1.0"
     }
   ]
 }

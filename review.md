@@ -1,4 +1,15 @@
-# Notes for the directory review (0.11.0)
+# Notes for the directory review
+
+## Budget Router Lite (the plugin submitted to the directory)
+
+`plugins/budget-router-lite` is markdown only: six skills, five agents, a cheatsheet, a README, a privacy policy and an icon. It has no hooks, no `modules` entry, no `userConfig`, no scripts, no tools, no MCP server and no settings file, makes no network request, and stores nothing. The directory accepts mods only from Verified organizations, so the full router (below) is not submitted; it is shared from the same repository's own marketplace.
+
+- **Skills** set a model and effort for the current prompt only (`quick`, `deep`), or run in a fresh forked context (`ask`, `pace`). All but `tips` carry `disable-model-invocation: true`, so they run only when the person types them. `handoff` asks Claude to write one file the person names, through Claude's own file tool and permission prompts.
+- **Agents** say what tools they hold: `scout` and `log-triage` have no shell; the other three say they use the shell and are instructed not to change anything.
+- **Verified** with `claude plugin validate --strict` (nothing to report) and live: `quick` and `ask` ran on Haiku at low effort, `deep` on Opus at xhigh, and the next plain prompt returned to the session model. `checks/lite.test.mjs` fails if code, hooks, options or tools appear.
+- Submission setting: "This plugin collects or transmits user data" = No. Privacy policy: `plugins/budget-router-lite/PRIVACY.md`.
+
+# Notes for the directory review of the full router (0.11.0, a mod)
 
 budget-router is a mod: a hooks module (`plugins/budget-router/hooks/register.ts`) that sets the model and effort of each request from a daily share of the subscription's weekly limit. A mod is what makes this possible; no other plugin surface can change the model per request. 0.11.0 is a rewrite down to that core: 5 source files (`register.ts` wiring and state, `ledger.ts` the daily budget, `policy.ts` pure routing helpers, `smart.ts` the learner, `tips.ts` fixed-text tips). `ARCHITECTURE.md` in the plugin folder has the diagrams. Earlier submissions (0.4.9 to 0.10.8) and the answers to their notes are in the git history of this file.
 

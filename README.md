@@ -36,13 +36,25 @@ flowchart LR
 
 The router is **rules first**: keywords and the shape of a prompt choose the tier (chit-chat runs on Haiku, normal coding on Sonnet, design and hard bugs on Opus, "think hard" on Opus at higher effort; the [full table](plugins/budget-router/README.md#routing) is in the reference). The learner and the budget only adjust that choice. You can pin a route with the `pin` option whenever you prefer to decide yourself. The full picture, with class, sequence and decision diagrams, is in [ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md).
 
+## Two plugins, one marketplace
+
+| | **budget-router** (full) | **budget-router-lite** |
+|---|---|---|
+| What it is | Automatic: routes every prompt, keeps a daily budget, status bar, notices, tips, learner | Manual: one-line commands for the habits that save the most (`ask`, `quick`, `deep`, `handoff`, `pace`, `tips`) plus five helper agents |
+| How it works | A hooks module (a "mod") | Plain markdown: no code, no hooks, no options, no network |
+| Where to get it | This marketplace (below) | This marketplace, and the Anthropic plugin directory once it is listed |
+| Pick it if | You want it automatic | You want zero code to trust, or your organization only allows directory plugins |
+
+The Anthropic directory accepts mods only from Verified organizations, so the full router is shared from this repository, and the lite plugin is the one submitted to the directory. Both are in [`plugins/`](plugins).
+
 ## Install
 
-Run these two commands in a terminal (not inside a Claude session):
+Run these commands in a terminal (not inside a Claude session):
 
 ```
 claude plugin marketplace add ValhalaStudio/budget-router-kit
-claude plugin install budget-router@budget-router-kit
+claude plugin install budget-router@budget-router-kit        # the full router
+claude plugin install budget-router-lite@budget-router-kit   # the markdown-only companion
 ```
 
 Start a new session with plain `claude`. After the first reply the status bar shows your route and today's budget. A session that was already open needs a restart (or `/reload-plugins`).
@@ -99,7 +111,8 @@ What no other tool I found does: treat the weekly limit as a daily budget, and l
 
 | Read | For |
 |---|---|
-| [plugins/budget-router/README.md](plugins/budget-router/README.md) | The reference: what every hook reads and changes, what it runs, sends, writes and stores |
+| [plugins/budget-router-lite/README.md](plugins/budget-router-lite/README.md) | The markdown-only plugin submitted to the directory |
+| [plugins/budget-router/README.md](plugins/budget-router/README.md) | The full router's reference: what every hook reads and changes, what it runs, sends, writes and stores |
 | [plugins/budget-router/ARCHITECTURE.md](plugins/budget-router/ARCHITECTURE.md) | Architecture, types, one turn, and how a route is decided, as diagrams |
 | [plugins/budget-router/PRIVACY.md](plugins/budget-router/PRIVACY.md) | The privacy policy |
 | [plugins/budget-router/CHEATSHEET.md](plugins/budget-router/CHEATSHEET.md) | Using Claude with fewer tokens, with sources |

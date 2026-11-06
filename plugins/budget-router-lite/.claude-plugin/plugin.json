@@ -1,0 +1,14 @@
+{
+  "name": "budget-router-lite",
+  "displayName": "Budget Router Lite",
+  "version": "0.1.0",
+  "author": {
+    "name": "ValhalaStudio",
+    "url": "https://github.com/ValhalaStudio"
+  },
+  "description": "Make your Claude limit last. Side questions in a fresh context on Haiku, one-prompt model and effort switches, a handoff before you clear, a daily-allowance calculator, a verified cheatsheet of token-saving habits, and five small read-only helper agents. Markdown only: no code, no hooks, no network.",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/ValhalaStudio/budget-router-kit",
+  "repository": "https://github.com/ValhalaStudio/budget-router-kit",
+  "keywords": ["usage-limit", "cost-saving", "model-selection", "subagents", "unreal-engine"]
+}
