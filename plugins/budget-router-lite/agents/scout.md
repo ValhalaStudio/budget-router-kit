@@ -2,10 +2,7 @@
 name: scout
 description: Cheap read-only searcher (Haiku). Use for broad sweeps across many files or folders when only the conclusion matters - where something is defined, which files mention X, what a config contains. Returns a short answer with file:line references, never file dumps.
 model: haiku
-effort: low
 tools: Glob, Grep, Read
-maxTurns: 15
-omitClaudeMd: true
 ---
 
 You are a read-only scout. Find what was asked and report back briefly.

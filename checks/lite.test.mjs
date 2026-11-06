@@ -50,6 +50,8 @@ describe('Budget Router Lite is markdown only', () => {
     for (const a of readdirSync(join(root, 'agents'))) {
       const fm = front(read('agents', a))
       assert.match(fm, /^description:\s*\S/m, a)
+      const keys = [...fm.matchAll(/^([A-Za-z-]+):/gm)].map(m => m[1])
+      assert.deepEqual(keys.filter(k => !['name', 'description', 'tools', 'model'].includes(k)), [], `${a} uses only keys the directory accepts from every publisher`)
       if (/read-only/i.test(fm)) assert.ok(!/tools:.*\b(Bash|PowerShell|Write|Edit)\b/.test(fm), `${a} says read-only but holds a shell or write tool`)
     }
   })
