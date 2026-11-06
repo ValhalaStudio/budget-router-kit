@@ -26,7 +26,7 @@ describe('Budget Router Lite is markdown only', () => {
 
   test('every skill is user-run or explicitly a cheatsheet loader, with a description', () => {
     const skills = readdirSync(join(root, 'skills'))
-    assert.deepEqual(skills.sort(), ['ask', 'deep', 'handoff', 'pace', 'quick', 'tips'])
+    assert.deepEqual(skills.sort(), ['deep', 'handoff', 'pace', 'quick', 'tips'])
     for (const s of skills) {
       const fm = front(read('skills', s, 'SKILL.md'))
       assert.match(fm, /^description:\s*\S/m, s)
@@ -35,11 +35,15 @@ describe('Budget Router Lite is markdown only', () => {
     }
   })
 
-  test('the tier skills set model and effort, and ask and pace start in a fresh context', () => {
+  test('the tier skills set model and effort, and no skill uses a key outside the allowed list', () => {
     const fm = (s) => front(read('skills', s, 'SKILL.md'))
     assert.match(fm('quick'), /model:\s*haiku[\s\S]*effort:\s*low/)
     assert.match(fm('deep'), /model:\s*opus[\s\S]*effort:\s*xhigh/)
-    for (const s of ['ask', 'pace']) assert.match(fm(s), /context:\s*fork/)
+    const allowed = ['name', 'description', 'argument-hint', 'disable-model-invocation', 'model', 'effort']
+    for (const s of ['deep', 'handoff', 'pace', 'quick', 'tips']) {
+      const keys = [...fm(s).matchAll(/^([a-z-]+):/gm)].map(m => m[1])
+      assert.deepEqual(keys.filter(k => !allowed.includes(k)), [], s)
+    }
   })
 
   test('agents tell the truth about their tools', () => {

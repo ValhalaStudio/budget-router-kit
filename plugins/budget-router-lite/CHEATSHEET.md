@@ -77,13 +77,13 @@ These are the situations that come up most, and what to do.
 
 ## Make the habits one command
 
-This plugin turns a few of them into commands: `/budget-router-lite:ask` for a side question in a fresh context, `/budget-router-lite:handoff` before a `/clear`, `/budget-router-lite:pace` for today's allowance, and `/budget-router-lite:quick` or `:deep` to pick a cheaper or stronger model for one prompt.
+This plugin turns a few of them into commands: `/budget-router-lite:handoff` before a `/clear`, `/budget-router-lite:pace` for today's allowance, and `/budget-router-lite:quick` or `:deep` to pick a cheaper or stronger model for one prompt.
 
 ## What this plugin does, and what stays with you
 
 - **It does:** gives you the commands above, the five helper agents, and this cheatsheet on demand (`/budget-router-lite:tips`).
 - **It does not:** change your model on its own, clear or compact for you, edit CLAUDE.md, or change your settings. It has no code, no hooks and no network access, so every habit here is yours to apply.
-- **A caution about switching models:** the prompt cache is kept per model. Switching to another model in the middle of a big conversation makes that model read the whole context fresh, which can cost more than it saves. `/budget-router-lite:ask` avoids this because it starts empty. Use `:quick` and `:deep` on small or fresh conversations.
+- **A caution about switching models:** the prompt cache is kept per model. Switching to another model in the middle of a big conversation makes that model read the whole context fresh, which can cost more than it saves. A fresh session or `/clear` avoids this, so use `:quick` and `:deep` on small or fresh conversations.
 
 ## Sources
 

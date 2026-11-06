@@ -16,8 +16,8 @@
     {
       "name": "budget-router-lite",
       "source": "./plugins/budget-router-lite",
-      "description": "Make your Claude limit last: side questions in a fresh context on Haiku, one-prompt model and effort switches, a handoff before you clear, a daily-allowance calculator, a verified token-saving cheatsheet and five read-only helper agents. Markdown only.",
-      "version": "0.1.0"
+      "description": "Make your Claude limit last: one-prompt model and effort switches, a handoff before you clear, a daily-allowance calculator, a verified token-saving cheatsheet and five read-only helper agents. Markdown only.",
+      "version": "0.1.1"
     }
   ]
 }

@@ -2,11 +2,11 @@
 
 ## Budget Router Lite (the plugin submitted to the directory)
 
-`plugins/budget-router-lite` is markdown only: six skills, five agents, a cheatsheet, a README, a privacy policy and an icon. It has no hooks, no `modules` entry, no `userConfig`, no scripts, no tools, no MCP server and no settings file, makes no network request, and stores nothing. The directory accepts mods only from Verified organizations, so the full router (below) is not submitted; it is shared from the same repository's own marketplace.
+`plugins/budget-router-lite` is markdown only: five skills, five agents, a cheatsheet, a README, a privacy policy and an icon. It has no hooks, no `modules` entry, no `userConfig`, no scripts, no tools, no MCP server and no settings file, makes no network request, and stores nothing. The directory accepts mods only from Verified organizations, so the full router (below) is not submitted; it is shared from the same repository's own marketplace.
 
-- **Skills** set a model and effort for the current prompt only (`quick`, `deep`), or run in a fresh forked context (`ask`, `pace`). All but `tips` carry `disable-model-invocation: true`, so they run only when the person types them. `handoff` asks Claude to write one file the person names, through Claude's own file tool and permission prompts.
+- **Skills** set a model and effort for the current prompt only (`quick`, `deep`, `handoff`) or calculate from numbers the person gives (`pace`). No skill uses a frontmatter key outside the directory's allowed list (`context` was removed after the portal flagged it). All but `tips` carry `disable-model-invocation: true`, so they run only when the person types them. `handoff` asks Claude to write one file the person names, through Claude's own file tool and permission prompts.
 - **Agents** say what tools they hold: `scout` and `log-triage` have no shell; the other three say they use the shell and are instructed not to change anything.
-- **Verified** with `claude plugin validate --strict` (nothing to report) and live: `quick` and `ask` ran on Haiku at low effort, `deep` on Opus at xhigh, and the next plain prompt returned to the session model. `checks/lite.test.mjs` fails if code, hooks, options or tools appear.
+- **Verified** with `claude plugin validate --strict` (nothing to report) and live: `quick` ran on Haiku at low effort, `deep` on Opus at xhigh, and the next plain prompt returned to the session model. `checks/lite.test.mjs` fails if code, hooks, options or tools appear.
 - Submission setting: "This plugin collects or transmits user data" = No. Privacy policy: `plugins/budget-router-lite/PRIVACY.md`.
 
 # Notes for the directory review of the full router (0.11.0, a mod)

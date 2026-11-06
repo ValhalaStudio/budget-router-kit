@@ -3,7 +3,6 @@ name: pace
 description: Turn your weekly usage percentage and days left into today's allowance and a suggested model tier.
 argument-hint: "[weekly percent used] [days until reset]"
 disable-model-invocation: true
-context: fork
 model: haiku
 effort: low
 ---

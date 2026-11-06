@@ -10,14 +10,13 @@ Most of a session's usage is not your new words. It is the whole conversation be
 
 | Command | What it does | When it saves |
 |---|---|---|
-| `/budget-router-lite:ask <question>` | Answers a self-contained question in a **fresh context** on Haiku, low effort. It does not see your conversation. | Any quick lookup: it never re-reads a long history |
 | `/budget-router-lite:quick <task>` | Runs this one prompt on Haiku, low effort, then your usual model returns | Small, fully specified tasks on a small or fresh conversation |
 | `/budget-router-lite:deep <problem>` | Runs this one prompt on Opus, extra-high effort, then your usual model returns | Hard design or debugging, where you want the strongest setting once |
 | `/budget-router-lite:handoff [file]` | Writes a short handoff file (goal, state, decisions, next steps, files) so you can `/clear` and continue | Before clearing a long conversation |
 | `/budget-router-lite:pace <percent used> <days left>` | Today's allowance and a suggested tier from your weekly usage | Planning your week; `/usage` shows the numbers |
 | `/budget-router-lite:tips` | Answers "how do I use fewer tokens?" from the [cheatsheet](CHEATSHEET.md), each habit with its command | Anytime; it also loads when you ask in plain words |
 
-`:quick` and `:deep` change the model for the current prompt only; your next prompt returns to your session model. The prompt cache is kept per model, so switching in the middle of a big conversation can cost more than it saves: use them on small or fresh conversations, and use `:ask` for side questions on big ones.
+`:quick` and `:deep` change the model for the current prompt only; your next prompt returns to your session model. The prompt cache is kept per model, so switching in the middle of a big conversation can cost more than it saves: use them on small or fresh conversations, and open a new session for a side question on a big one.
 
 ## Helper agents
 
@@ -42,7 +41,7 @@ Needs a recent Claude Code (skills with `model` and `effort` settings). No accou
 
 ## Example prompts
 
-1. **Ask without the history.** In the middle of a long session: `/budget-router-lite:ask what does the --max-turns flag do?` It answers from a fresh context, so it does not re-read your conversation.
+1. **A small task, cheaply.** `/budget-router-lite:quick rename getUser to fetchUser in this file` runs on Haiku for this prompt only; your next prompt returns to your usual model.
 2. **Clear without losing the thread.** `/budget-router-lite:handoff`, then `/clear`, then start with `@HANDOFF.md`.
 3. **Plan your week.** `/budget-router-lite:pace 61 3` (61% used, 3 days left) gives today's share and a tier to use.
 
